@@ -3,9 +3,11 @@ import { ConsoleHeading } from '@/components/console/ConsoleHeading';
 import { TerminalPanel } from '@/components/console/primitives';
 import { ComparisonChartLazy } from '@/components/marketing/ComparisonChartLazy';
 import { DemoModeBadge } from '@/components/ui/primitives';
+import { loadBatch } from '@/lib/batch.server';
 import { percent, rupees } from '@/lib/format';
-import { getSampleBatch } from '@/lib/sample.server';
 import type { AgentMetrics } from '@/lib/types';
+
+export const dynamic = 'force-dynamic';
 
 function buildRows(a: AgentMetrics, b: AgentMetrics): MetricRow[] {
   const cmp = (av: number, bv: number, lowerIsBetter: boolean): 'a' | 'b' | null => {
@@ -90,8 +92,13 @@ function buildRows(a: AgentMetrics, b: AgentMetrics): MetricRow[] {
   ];
 }
 
-export default function ComparePage() {
-  const batch = getSampleBatch();
+export default async function ComparePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ batch?: string }>;
+}) {
+  const { batch: requested } = await searchParams;
+  const { batch, source } = await loadBatch(requested);
   const a = batch.agents.A;
   const b = batch.agents.B;
 
@@ -105,7 +112,7 @@ export default function ComparePage() {
       <ConsoleHeading
         title="Comparison panel"
         sub="Two policies, one batch, one policy gate, one contact budget. The only thing that differs is what each ranks by."
-        aside={<DemoModeBadge source={batch.source} />}
+        aside={<DemoModeBadge source={source} />}
       />
 
       <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">

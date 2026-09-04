@@ -9,35 +9,16 @@ import { PolicySection } from '@/components/marketing/PolicySection';
 import { Problem } from '@/components/marketing/Problem';
 import { Submission } from '@/components/marketing/Submission';
 import { Footer } from '@/components/shell/Footer';
-import { getHeroFeedRows, getSampleBatch } from '@/lib/sample.server';
-import type { BatchResult, DataSource } from '@/lib/types';
+import { loadBatch } from '@/lib/batch.server';
+import { getHeroFeedRows } from '@/lib/sample.server';
 
 /**
  * The marketing page tries the backend for its Live Results figures and falls
  * back to the bundled synthetic batch, passing the source down so the badge
- * reflects where the numbers actually came from.
+ * reflects where the numbers actually came from. Same loader as the console,
+ * so the pitch and the product can never disagree about which batch is latest.
  */
-async function loadBatch(): Promise<{ batch: BatchResult; source: DataSource }> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-  if (apiUrl) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(`${apiUrl}/api/batch/latest`, {
-        signal: controller.signal,
-        next: { revalidate: 60 },
-      });
-      clearTimeout(timer);
-      if (res.ok) {
-        const live = (await res.json()) as BatchResult;
-        return { batch: { ...live, source: 'live' }, source: 'live' };
-      }
-    } catch {
-      /* falls through to the bundled batch */
-    }
-  }
-  return { batch: getSampleBatch(), source: 'sample' };
-}
+export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
   const feed = getHeroFeedRows();

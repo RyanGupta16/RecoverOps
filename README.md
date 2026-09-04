@@ -59,18 +59,44 @@ model prices what a contact can break, and Agent B ranks by expected net value:
 
 Expected backend endpoints (`src/lib/api.ts` is typed against them):
 
-| Method | Path                          | Used by                     |
-| ------ | ----------------------------- | --------------------------- |
-| `POST` | `/api/batch/run`              | console run button          |
-| `GET`  | `/api/batch/stream`           | live SSE decision stream    |
-| `GET`  | `/api/batch/latest`           | landing page Live Results   |
-| `GET`  | `/api/batch/:id/results`      | comparison panel            |
-| `GET`  | `/api/events/:eventId/trace`  | decision trace              |
-| `GET`  | `/api/sleeping-dogs`          | sleeping dog ledger         |
-| `GET`  | `/api/exceptions`             | exception queue             |
+| Method | Path                            | Used by                                   |
+| ------ | ------------------------------- | ----------------------------------------- |
+| `POST` | `/api/batch/run`                | console run button                        |
+| `GET`  | `/api/batches?limit=`           | history tab                               |
+| `GET`  | `/api/batch/stream`             | live SSE decision stream                  |
+| `GET`  | `/api/batch/latest`             | landing page, console side panels         |
+| `GET`  | `/api/batch/:id/results`        | comparison panel (`?batch=` on any tab)   |
+| `GET`  | `/api/batch/:id/sleeping-dogs`  | sleeping dog ledger for a past batch      |
+| `GET`  | `/api/batch/:id/exceptions`     | exception queue for a past batch          |
+| `GET`  | `/api/events/:eventId/trace`    | decision trace (`?batch_id=` optional)    |
+| `GET`  | `/api/sleeping-dogs`            | sleeping dog ledger, latest batch         |
+| `GET`  | `/api/exceptions`               | exception queue, latest batch             |
+| `GET`  | `/api/audit?limit=&kind=&ref=`  | history tab, audit log tail               |
+| `GET`  | `/api/audit/verify`             | history tab, hash-chain verification      |
 
-Each falls back to the bundled synthetic batch, served from `/api/sample/*` route
-handlers so the 800 KB dataset never enters the client bundle.
+Every console page asks the backend first and falls back to the bundled synthetic batch,
+served from `/api/sample/*` route handlers so the 800 KB dataset never enters the client
+bundle. The badge on each page says which one answered.
+
+### The ledger
+
+Everything a batch produces is persisted in `backend/data/ledger.db` (SQLite, WAL mode,
+migrations keyed on `PRAGMA user_version`): the batch, every decision trace, the case
+memory the retrieval layer reads, and an **append-only audit log**. Each audit row carries
+the SHA-256 of the previous row's hash plus its own canonical body; `GET /api/audit/verify`
+recomputes the chain from genesis and reports the first break. A batch run writes one
+`decision` row per event — action, message class, every rule verdict, the execution record,
+the outcome — and one `batch.completed` row. A blocked action leaves the same trail as an
+executed one, and a restart changes nothing.
+
+First boot runs one batch if the ledger is empty so the site has live data before anyone
+presses Run. To seed history and case memory on a fresh clone:
+
+```bash
+cd backend && .venv/bin/python -m app.seed --batches 3
+```
+
+Backend tests: `cd backend && .venv/bin/python -m pytest tests -q`.
 
 ## Scripts
 
@@ -124,6 +150,7 @@ src/
       trace/[eventId]/          full decision chain for one event
       sleeping-dogs/            every no-action decision, and why
       exceptions/               unresolved cases with structured reasons
+      history/                  every batch on record + the audit chain
     api/sample/                 demo-mode fallback endpoints
   components/
     motion/                     useAnimeScope, Reveal, CountUp
@@ -131,8 +158,17 @@ src/
     marketing/  ui/  shell/  console/
   lib/
     api.ts        typed client with graceful fallback
+    batch.server.ts   server loaders: backend first, bundled batch second, source reported
     policy.ts     the twelve named rules + the seven pipeline layers
     sample.server.ts  server-only access to the bundled batch
+backend/
+  app/
+    store.py      SQLite ledger: batches, traces, case memory, hash-chained audit log
+    runtime.py    the live layers wired once; the one way to run and persist a batch
+    engine.py     batch orchestration over the seven layers
+    sim.py  uplift.py  retrieval.py  policy.py  diagnosis.py  executor.py
+    seed.py       python -m app.seed — fill history and case memory on a fresh clone
+  tests/          pytest
 data/             generated — do not hand-edit
 assets/           source video for the background
 public/frames/    generated frame sequence
@@ -191,5 +227,5 @@ with plausible-looking values. The repository URL is filled in.
 `data/*.json` (the bundled demo batch and traces), `assets/agent-background.mp4` and the
 extracted `public/frames/` sequence are committed, so a fresh clone renders correctly
 without running the macOS-only frame extractor. The backend's trained models
-(`uplift_models.pkl`), its SQLite ledger and written batches are not — they are rebuilt on
-first boot and first run.
+(`uplift_models.pkl`) and its SQLite ledger (`ledger.db`) are not — the models are rebuilt
+on first boot (~30 s, once) and the ledger fills from the first batch.

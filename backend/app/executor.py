@@ -52,6 +52,11 @@ class Executor:
 
         amount_str = f"₹{ev.amount_paise / 100:.2f}"
         if action == "silent_retry":
+            # Razorpay exposes no merchant-initiated retry for a subscription:
+            # a failed charge moves it to `pending` and Razorpay itself retries
+            # at T+1, T+2, T+3 before `halted`. What we can do in test mode is
+            # create the order the next charge will run against, which proves
+            # the integration without inventing an endpoint.
             if self._take_live_slot():
                 try:
                     order = self.client.order.create(
@@ -64,7 +69,10 @@ class Executor:
                     )
                     return {
                         "mode": "razorpay_test_mode",
-                        "detail": f"POST /v1/orders → {order['id']} — retry order created, test mode.",
+                        "detail": (
+                            f"POST /v1/orders → {order['id']} — retry order created, test mode. "
+                            f"Subscription {ev.subscription_id} left in `pending` for Razorpay's T+1 auto-retry."
+                        ),
                         "mocked": False,
                     }
                 except Exception as exc:  # noqa: BLE001 — an executor failure must not sink the batch
@@ -76,8 +84,11 @@ class Executor:
             note = "call budget reached for this batch" if self.client else "no API keys configured"
             return {
                 "mode": "razorpay_test_mode",
-                "detail": f"POST /v1/subscriptions/{ev.subscription_id}/retry — test mode ({note}).",
-                "mocked": self.client is None,
+                "detail": (
+                    f"Subscription {ev.subscription_id} left in `pending` for Razorpay's scheduled T+1 auto-retry "
+                    f"(no merchant retry endpoint exists). Retry order not created — {note}."
+                ),
+                "mocked": True,
             }
 
         # Outreach actions: payment link via the real API where allowed.

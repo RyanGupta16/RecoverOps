@@ -2,11 +2,18 @@ import { ConsoleHeading } from '@/components/console/ConsoleHeading';
 import { ExceptionTable } from '@/components/console/LedgerTables';
 import { TerminalPanel } from '@/components/console/primitives';
 import { DemoModeBadge } from '@/components/ui/primitives';
+import { loadBatch } from '@/lib/batch.server';
 import { rupees } from '@/lib/format';
-import { getSampleBatch } from '@/lib/sample.server';
 
-export default function ExceptionsPage() {
-  const batch = getSampleBatch();
+export const dynamic = 'force-dynamic';
+
+export default async function ExceptionsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ batch?: string }>;
+}) {
+  const { batch: requested } = await searchParams;
+  const { batch, source } = await loadBatch(requested);
   const records = batch.exceptions;
 
   const byRule = records.reduce<Record<string, number>>((acc, r) => {
@@ -21,7 +28,7 @@ export default function ExceptionsPage() {
       <ConsoleHeading
         title="Exception queue"
         sub="Cases where the action ladder ran out before the payment did. Each carries the rule that stopped it and the values that triggered that rule, so a human picking it up does not have to re-derive the decision."
-        aside={<DemoModeBadge source={batch.source} />}
+        aside={<DemoModeBadge source={source} />}
       />
 
       <div className="mb-4 grid gap-4 lg:grid-cols-[1fr_1fr_1.4fr]">

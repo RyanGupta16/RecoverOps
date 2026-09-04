@@ -2,45 +2,40 @@
 
 Endpoints match src/lib/api.ts on the frontend exactly:
 
-  POST /api/batch/run              start a batch, returns {batchId}
-  GET  /api/batch/stream?batch_id  SSE replay of the decision stream
-  GET  /api/batch/latest           most recent BatchResult
-  GET  /api/batch/{id}/results     one BatchResult
-  GET  /api/events/{id}/trace      DecisionTrace
-  GET  /api/sleeping-dogs          latest batch's no-action ledger
-  GET  /api/exceptions             latest batch's escalations
+  GET  /api/health                     layers, benchmark, key status, audit state
+  POST /api/batch/run                  run a batch, returns {batchId}
+  GET  /api/batches?limit=             batch history, newest first (summaries)
+  GET  /api/batch/latest               most recent BatchResult
+  GET  /api/batch/{id}/results         one BatchResult
+  GET  /api/batch/{id}/sleeping-dogs   that batch's no-action ledger
+  GET  /api/batch/{id}/exceptions      that batch's escalations
+  GET  /api/batch/stream?batch_id      SSE replay of the decision stream
+  GET  /api/events/{id}/trace          DecisionTrace (optionally ?batch_id=)
+  GET  /api/sleeping-dogs              latest batch's no-action ledger
+  GET  /api/exceptions                 latest batch's escalations
+  GET  /api/audit?limit=&kind=&ref=    audit log tail
+  GET  /api/audit/verify               walk the hash chain, report the first break
 
 Run:  uvicorn app.main:app --port 8000    (from backend/, venv active)
 
-Batches are kept in memory (latest few) and the latest is also written to
-data/batches/ so a restart still has something to serve.
+Every batch and every trace is persisted in data/ledger.db; a restart serves
+the same history. See store.py for the schema and the audit chain.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import threading
-from collections import OrderedDict
-from pathlib import Path
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+from .runtime import Runtime
 
-from .diagnosis import Diagnoser  # noqa: E402
-from .engine import run_batch  # noqa: E402
-from .executor import Executor  # noqa: E402
-from .retrieval import CaseMemory, Corpus  # noqa: E402
-from .uplift import UpliftEngine  # noqa: E402
-
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-BATCH_DIR = DATA_DIR / "batches"
-BATCH_DIR.mkdir(exist_ok=True)
-MAX_BATCHES_IN_MEMORY = 5
+rt = Runtime.build()
+rt.import_legacy_batch()
+rt.ensure_first_batch()
 
 app = FastAPI(title="RecoverOps backend")
 app.add_middleware(
@@ -50,87 +45,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-corpus = Corpus()
-memory = CaseMemory()
-executor = Executor()
-diagnoser = Diagnoser(corpus)
-uplift = UpliftEngine()  # trains on first ever boot, then loads the pickle cache
 
-_lock = threading.Lock()
-_batches: OrderedDict[str, dict] = OrderedDict()  # batchId -> {"batch": ..., "traces": ...}
-_latest_id: str | None = None
+def _batch_or_404(batch_id: str) -> dict:
+    batch = rt.store.get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(404, f"Unknown batch {batch_id}")
+    return batch
 
 
-def _remember(result: dict) -> str:
-    global _latest_id
-    batch_id = result["batch"]["batchId"]
-    with _lock:
-        _batches[batch_id] = result
-        while len(_batches) > MAX_BATCHES_IN_MEMORY:
-            _batches.popitem(last=False)
-        _latest_id = batch_id
-    (BATCH_DIR / "latest.json").write_text(json.dumps(result))
-    return batch_id
-
-
-def _load_persisted() -> None:
-    global _latest_id
-    path = BATCH_DIR / "latest.json"
-    if path.exists():
-        try:
-            result = json.loads(path.read_text())
-            _batches[result["batch"]["batchId"]] = result
-            _latest_id = result["batch"]["batchId"]
-        except (json.JSONDecodeError, KeyError):
-            pass
-
-
-_load_persisted()
+def _latest_or_404() -> dict:
+    latest = rt.store.latest_batch_id()
+    if latest is None:
+        raise HTTPException(404, "No batch has been run yet.")
+    return _batch_or_404(latest)
 
 
 @app.get("/api/health")
 def health() -> dict:
     return {
         "ok": True,
-        "estimator": uplift.label,
-        "benchmark": uplift.benchmark["estimators"],
-        "retrieval": corpus.benchmark(),
-        "razorpayLive": executor.client is not None,
-        "llmLive": bool(diagnoser.api_key),
+        "estimator": rt.uplift.label,
+        "benchmark": rt.uplift.benchmark["estimators"],
+        "retrieval": rt.corpus.benchmark(),
+        "razorpayLive": rt.executor.client is not None,
+        "llmLive": bool(rt.diagnoser.api_key),
+        "store": {
+            "schemaVersion": rt.store.schema_version,
+            "batches": rt.store.count_batches(),
+            "auditRows": rt.store.audit_count(),
+        },
     }
 
 
 @app.post("/api/batch/run")
 def batch_run() -> dict:
-    result = run_batch(uplift, corpus, memory, executor, diagnoser)
-    batch_id = _remember(result)
-    return {"batchId": batch_id}
+    summary = rt.run_and_store()
+    return {"batchId": summary["batchId"]}
+
+
+@app.get("/api/batches")
+def batches(limit: int = Query(25, ge=1, le=200)) -> list:
+    return rt.store.list_batches(limit=limit)
 
 
 @app.get("/api/batch/latest")
 def batch_latest() -> dict:
-    with _lock:
-        if _latest_id is None:
-            raise HTTPException(404, "No batch has been run yet.")
-        return _batches[_latest_id]["batch"]
+    return _latest_or_404()
 
 
 @app.get("/api/batch/{batch_id}/results")
 def batch_results(batch_id: str) -> dict:
-    with _lock:
-        entry = _batches.get(batch_id)
-    if entry is None:
-        raise HTTPException(404, f"Unknown batch {batch_id}")
-    return entry["batch"]
+    return _batch_or_404(batch_id)
+
+
+@app.get("/api/batch/{batch_id}/sleeping-dogs")
+def batch_sleeping_dogs(batch_id: str) -> list:
+    return _batch_or_404(batch_id)["sleepingDogs"]
+
+
+@app.get("/api/batch/{batch_id}/exceptions")
+def batch_exceptions(batch_id: str) -> list:
+    return _batch_or_404(batch_id)["exceptions"]
 
 
 @app.get("/api/batch/stream")
 async def batch_stream(batch_id: str) -> StreamingResponse:
-    with _lock:
-        entry = _batches.get(batch_id)
-    if entry is None:
-        raise HTTPException(404, f"Unknown batch {batch_id}")
-    script = entry["batch"]["streamScript"]
+    script = _batch_or_404(batch_id)["streamScript"]
 
     async def gen():
         for line in script:
@@ -147,27 +127,28 @@ async def batch_stream(batch_id: str) -> StreamingResponse:
 
 
 @app.get("/api/events/{event_id}/trace")
-def event_trace(event_id: str) -> dict:
-    with _lock:
-        entries = list(_batches.values())
-    for entry in reversed(entries):
-        trace = entry["traces"].get(event_id)
-        if trace:
-            return trace
-    raise HTTPException(404, f"No trace for event {event_id}")
+def event_trace(event_id: str, batch_id: str | None = None) -> dict:
+    trace = rt.store.get_trace(event_id, batch_id)
+    if trace is None:
+        raise HTTPException(404, f"No trace for event {event_id}")
+    return trace
 
 
 @app.get("/api/sleeping-dogs")
 def sleeping_dogs() -> list:
-    with _lock:
-        if _latest_id is None:
-            raise HTTPException(404, "No batch has been run yet.")
-        return _batches[_latest_id]["batch"]["sleepingDogs"]
+    return _latest_or_404()["sleepingDogs"]
 
 
 @app.get("/api/exceptions")
 def exceptions() -> list:
-    with _lock:
-        if _latest_id is None:
-            raise HTTPException(404, "No batch has been run yet.")
-        return _batches[_latest_id]["batch"]["exceptions"]
+    return _latest_or_404()["exceptions"]
+
+
+@app.get("/api/audit")
+def audit(limit: int = Query(100, ge=1, le=1000), kind: str | None = None, ref: str | None = None) -> dict:
+    return {"rows": rt.store.audit_tail(limit=limit, kind=kind, ref=ref), "total": rt.store.audit_count()}
+
+
+@app.get("/api/audit/verify")
+def audit_verify() -> dict:
+    return rt.store.verify_audit()

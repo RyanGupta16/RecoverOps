@@ -1,23 +1,33 @@
 import { BatchRunner } from '@/components/console/BatchRunner';
 import { ConsoleHeading } from '@/components/console/ConsoleHeading';
 import { TerminalPanel } from '@/components/console/primitives';
+import { DemoModeBadge } from '@/components/ui/primitives';
+import { loadBatch } from '@/lib/batch.server';
 import { getSampleBatch } from '@/lib/sample.server';
 
-export default function ConsolePage() {
-  const batch = getSampleBatch();
+// The side panels describe the latest stored batch, so this page must render
+// per request rather than be frozen at build time with the bundled sample.
+export const dynamic = 'force-dynamic';
+
+export default async function ConsolePage() {
+  // The runner replays the bundled script only when the backend never opens a
+  // stream; the panels beside it describe whichever batch actually answered.
+  const sample = getSampleBatch();
+  const { batch, source } = await loadBatch();
 
   return (
     <>
       <ConsoleHeading
         title="Batch console"
         sub="Runs against the backend at NEXT_PUBLIC_API_URL when it is reachable, and replays the bundled synthetic batch when it is not. Which one produced what you are looking at is stated on screen, never assumed."
+        aside={<DemoModeBadge source={source} />}
       />
 
       <div className="grid gap-4 xl:grid-cols-[1fr_330px]">
-        <BatchRunner script={batch.streamScript} />
+        <BatchRunner script={sample.streamScript} />
 
         <div className="flex flex-col gap-4">
-          <TerminalPanel title="Assumptions" meta="simulation parameters">
+          <TerminalPanel title="Assumptions" meta={source === 'live' ? batch.batchId : 'simulation parameters'}>
             <dl className="flex flex-col gap-3">
               {batch.assumptions.map((assumption) => (
                 <div

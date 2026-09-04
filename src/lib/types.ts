@@ -233,6 +233,52 @@ export interface DecisionTrace {
   };
 }
 
+/** The slim per-agent figures the history list shows. Mirrors Store.summarize in the backend. */
+export interface AgentSummaryMetrics {
+  contactsMade: number;
+  recoveredPaise: number;
+  netValuePaise: number;
+  sleepingDogsTouched: number;
+  wastedContacts: number;
+  escalations: number;
+  recoveryRate: number;
+}
+
+/** One row of batch history — GET /api/batches. */
+export interface BatchSummary {
+  batchId: string;
+  label: string | null;
+  source: DataSource;
+  seed: number | null;
+  eventCount: number;
+  generatedBy?: string | null;
+  createdAt: string;
+  agents: { A: AgentSummaryMetrics; B: AgentSummaryMetrics };
+  sleepingDogs: number;
+  exceptions: number;
+  pipelineStats?: BatchResult['pipelineStats'] | null;
+}
+
+/** GET /api/audit/verify — the hash chain walked from genesis. */
+export interface AuditVerification {
+  ok: boolean;
+  rows: number;
+  firstBreak: number | null;
+  head: string;
+}
+
+/** One append-only audit row. `hash` covers `prevHash` + the canonical body. */
+export interface AuditEntry {
+  seq: number;
+  at: string;
+  actor: string;
+  kind: string;
+  ref: string | null;
+  payload: Record<string, unknown>;
+  prevHash: string;
+  hash: string;
+}
+
 /** Every response carries where it came from, so the Demo Mode badge is driven by data. */
 export interface Sourced<T> {
   data: T;

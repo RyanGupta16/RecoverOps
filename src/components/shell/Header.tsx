@@ -18,6 +18,7 @@ const CONSOLE_LINKS = [
   { href: '/console/compare', label: 'Compare' },
   { href: '/console/sleeping-dogs', label: 'Sleeping dogs' },
   { href: '/console/exceptions', label: 'Exceptions' },
+  { href: '/console/history', label: 'History' },
 ];
 
 export function Header() {

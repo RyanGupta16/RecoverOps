@@ -1,5 +1,8 @@
 import type {
+  AuditEntry,
+  AuditVerification,
   BatchResult,
+  BatchSummary,
   DecisionTrace,
   ExceptionRecord,
   SleepingDogRecord,
@@ -56,6 +59,24 @@ export async function fetchLatestBatch(): Promise<Sourced<BatchResult>> {
   const fallback = await sample<BatchResult>('/api/sample/batch');
   if (!fallback) throw new Error('Neither the backend nor the bundled sample batch could be read.');
   return { data: fallback, source: 'sample' };
+}
+
+/** One stored batch by id. Null when the backend is unreachable or has no such batch. */
+export function fetchBatch(batchId: string): Promise<BatchResult | null> {
+  return backend<BatchResult>(`/api/batch/${encodeURIComponent(batchId)}/results`);
+}
+
+/** Batch history, newest first. Empty when there is no backend — history lives in its ledger. */
+export async function fetchBatches(limit = 25): Promise<BatchSummary[]> {
+  return (await backend<BatchSummary[]>(`/api/batches?limit=${limit}`)) ?? [];
+}
+
+export function fetchAuditVerify(): Promise<AuditVerification | null> {
+  return backend<AuditVerification>('/api/audit/verify');
+}
+
+export async function fetchAuditTail(limit = 50): Promise<{ rows: AuditEntry[]; total: number } | null> {
+  return backend<{ rows: AuditEntry[]; total: number }>(`/api/audit?limit=${limit}`);
 }
 
 export async function startBatchRun(): Promise<{ batchId: string; source: 'live' | 'sample' }> {

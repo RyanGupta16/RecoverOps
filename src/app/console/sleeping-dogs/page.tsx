@@ -2,11 +2,18 @@ import { ConsoleHeading } from '@/components/console/ConsoleHeading';
 import { SleepingDogTable } from '@/components/console/LedgerTables';
 import { TerminalPanel } from '@/components/console/primitives';
 import { DemoModeBadge } from '@/components/ui/primitives';
+import { loadBatch } from '@/lib/batch.server';
 import { rupees } from '@/lib/format';
-import { getSampleBatch } from '@/lib/sample.server';
 
-export default function SleepingDogsPage() {
-  const batch = getSampleBatch();
+export const dynamic = 'force-dynamic';
+
+export default async function SleepingDogsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ batch?: string }>;
+}) {
+  const { batch: requested } = await searchParams;
+  const { batch, source } = await loadBatch(requested);
   const records = batch.sleepingDogs;
 
   const trueDogs = records.filter((r) => r.truthSegment === 'sleeping_dog');
@@ -18,7 +25,7 @@ export default function SleepingDogsPage() {
       <ConsoleHeading
         title="Sleeping dog ledger"
         sub="Every case the agent decided not to touch, and the reason. Doing nothing is a decision with a record, not an absence of one."
-        aside={<DemoModeBadge source={batch.source} />}
+        aside={<DemoModeBadge source={source} />}
       />
 
       <div className="mb-4 grid gap-4 lg:grid-cols-3">

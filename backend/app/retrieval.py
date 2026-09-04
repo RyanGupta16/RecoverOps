@@ -14,22 +14,23 @@ adds latency, a dependency, and hallucination-shaped nearest neighbours for
 zero measured gain at this scale. The benchmark below makes that case with
 numbers instead of vibes.
 
-Case memory is SQLite: every resolved decision is written back and similar
-past cases are retrieved by (reason_code, method, amount band).
+Case memory lives in the shared SQLite store: every resolved decision is
+written back and similar past cases are retrieved by (reason_code, method,
+amount band).
 """
 
 from __future__ import annotations
 
 import json
 import re
-import sqlite3
-import threading
 from pathlib import Path
 
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+from .store import Store, now_iso
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -103,27 +104,14 @@ class CaseMemory:
     Facets (reason, method, amount band) beat text similarity here because the
     question case memory answers is 'what happened last time on cases like
     this', and 'like this' is defined by the features the uplift model acts on.
+
+    Lives in the shared Store (one connection, WAL) rather than opening its own
+    — ``similar`` runs once per event, and a thousand ``sqlite3.connect`` calls
+    per batch was the first thing that would have broken at a larger batch.
     """
 
-    def __init__(self, db_path: Path | None = None) -> None:
-        self._path = str(db_path or DATA_DIR / "ledger.db")
-        self._lock = threading.Lock()
-        with self._conn() as c:
-            c.execute(
-                """CREATE TABLE IF NOT EXISTS case_memory (
-                    id INTEGER PRIMARY KEY,
-                    reason_code TEXT, method TEXT, amount_band TEXT,
-                    action TEXT, contacted INTEGER,
-                    recovered INTEGER, churned INTEGER,
-                    batch_id TEXT
-                )"""
-            )
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_case_facets ON case_memory (reason_code, method, amount_band)"
-            )
-
-    def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._path)
+    def __init__(self, store: Store) -> None:
+        self._store = store
 
     @staticmethod
     def band(amount_paise: int) -> str:
@@ -133,16 +121,39 @@ class CaseMemory:
             return "500-1500"
         return "gt1500"
 
-    def record(self, ev, action: str, contacted: bool, recovered: bool, churned: bool, batch_id: str) -> None:
-        with self._lock, self._conn() as c:
+    def record(
+        self,
+        ev,
+        action: str,
+        contacted: bool,
+        recovered: bool,
+        churned: bool,
+        batch_id: str,
+        kind: str = "subscription_failure",
+    ) -> None:
+        with self._store.transaction() as c:
             c.execute(
-                "INSERT INTO case_memory (reason_code, method, amount_band, action, contacted, recovered, churned, batch_id) VALUES (?,?,?,?,?,?,?,?)",
-                (ev.reason_code, ev.method, self.band(ev.amount_paise), action, int(contacted), int(recovered), int(churned), batch_id),
+                """INSERT INTO case_memory
+                   (reason_code, method, amount_band, action, contacted, recovered, churned, batch_id, created_at, event_id, kind)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    ev.reason_code,
+                    ev.method,
+                    self.band(ev.amount_paise),
+                    action,
+                    int(contacted),
+                    int(recovered),
+                    int(churned),
+                    batch_id,
+                    now_iso(),
+                    ev.event_id,
+                    kind,
+                ),
             )
 
     def similar(self, ev) -> dict:
-        with self._lock, self._conn() as c:
-            row = c.execute(
+        with self._store.lock:
+            row = self._store.conn.execute(
                 """SELECT COUNT(*),
                           SUM(CASE WHEN contacted=0 AND recovered=1 THEN 1 ELSE 0 END),
                           SUM(CASE WHEN contacted=0 THEN 1 ELSE 0 END),
