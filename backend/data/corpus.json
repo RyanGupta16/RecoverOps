@@ -1,0 +1,96 @@
+{
+  "note": "Grounding corpus for the diagnosis/retrieval layer. Entries are modelled on Razorpay's published error taxonomy (error.code / error.reason / error.description fields returned by the Payments API) plus card-network retry guidance. Curated by hand for this build — the retriever cites these documents; it never free-generates error semantics.",
+  "documents": [
+    {
+      "id": "rzp-insufficient-funds",
+      "code": "INSUFFICIENT_FUNDS",
+      "title": "Payment failed: insufficient funds",
+      "text": "BAD_REQUEST_ERROR with reason payment_failed. Issuer declined the debit because the account or card had insufficient balance at authorisation time. Customer-side soft decline. Highly recoverable: balances replenish on salary cycles. Silent retry timed to a salary window outperforms immediate retry. Payment link is useful only when the customer must switch instruments.",
+      "actions": ["silent_retry", "payment_link_sms", "payment_link_whatsapp"]
+    },
+    {
+      "id": "rzp-card-expired",
+      "code": "CARD_EXPIRED",
+      "title": "Payment failed: card expired or reissued",
+      "text": "BAD_REQUEST_ERROR, description indicates expired card. Hard decline for this instrument — retrying the same card cannot succeed. Requires customer action: card update request so the subscription token can be refreshed against the reissued card. Network account-updater services may fix this silently for supported networks.",
+      "actions": ["card_update_request"]
+    },
+    {
+      "id": "rzp-do-not-honour",
+      "code": "DO_NOT_HONOUR",
+      "title": "Issuer decline: do not honour (05)",
+      "text": "GATEWAY_ERROR or BAD_REQUEST_ERROR mapping to network response 05, do not honour. Deliberately opaque catch-all from the issuer: could be risk rules, temporary account state, or velocity limits. Ambiguous — needs classification against transaction context. Retry after cooling-off often clears; repeated immediate retries raise issuer suspicion and can burn the card.",
+      "actions": ["silent_retry", "payment_link_sms"]
+    },
+    {
+      "id": "rzp-issuer-down",
+      "code": "ISSUER_DOWN",
+      "title": "Issuer or acquirer unavailable",
+      "text": "GATEWAY_ERROR with reason issuer_down or bank offline window. Infrastructure failure, not a customer decision. Never contact the customer: they cannot fix a bank outage and the payment usually clears on backoff retry once the issuer recovers. Exponential backoff, zero outreach.",
+      "actions": ["silent_retry"]
+    },
+    {
+      "id": "rzp-timeout",
+      "code": "PAYMENT_TIMEOUT",
+      "title": "Authorisation timed out",
+      "text": "GATEWAY_ERROR, authorisation did not complete inside the window. Common on UPI collect flows and 3DS journeys abandoned mid-way. Split cause: infrastructure latency (retry silently) versus customer drop-off (a nudge with a fresh payment link can help if engagement is high).",
+      "actions": ["silent_retry", "payment_link_whatsapp"]
+    },
+    {
+      "id": "rzp-invalid-auth",
+      "code": "INVALID_AUTH_DATA",
+      "title": "Invalid CVV or authentication data",
+      "text": "BAD_REQUEST_ERROR, customer entered wrong CVV/OTP or authentication data mismatch. Customer-side, fixable by the customer alone. A payment link retry lets them re-enter correctly. Silent retry of the same failed authentication cannot succeed for card flows.",
+      "actions": ["payment_link_sms", "payment_link_whatsapp"]
+    },
+    {
+      "id": "rzp-mandate-revoked",
+      "code": "MANDATE_REVOKED",
+      "title": "e-Mandate cancelled by customer",
+      "text": "Subscription charge failed because the customer revoked the UPI autopay or eNACH mandate at their bank or PSP app. This is an explicit customer decision — mostly a lost cause. Re-solicitation is promotional-class outreach under TCCCPR and needs consent. A small win-back incentive occasionally converts, capped by policy.",
+      "actions": ["incentive_link", "escalate"]
+    },
+    {
+      "id": "rzp-limit-exceeded",
+      "code": "AUTH_LIMIT_EXCEEDED",
+      "title": "Per-transaction or daily limit exceeded",
+      "text": "Issuer declined: amount exceeds the card or UPI per-transaction/daily limit the customer has configured. Recoverable: limits reset daily, or the customer can raise them. Retry after the limit window, or send a payment link so the customer can pay from another instrument.",
+      "actions": ["silent_retry", "payment_link_sms"]
+    },
+    {
+      "id": "rzp-suspected-fraud",
+      "code": "SUSPECTED_FRAUD",
+      "title": "Risk hold: suspected fraud",
+      "text": "Payment held by risk rules — issuer or gateway flagged the transaction. Hard stop. Card networks and scheme rules prohibit merchant-initiated retries on fraud-coded declines; retrying damages merchant standing and can trigger fines. Never retried, never messaged. Route to manual review only.",
+      "actions": ["escalate"]
+    },
+    {
+      "id": "rzp-gateway-error",
+      "code": "GATEWAY_ERROR",
+      "title": "Gateway-side processing error",
+      "text": "SERVER_ERROR or GATEWAY_ERROR without a specific issuer reason. Ambiguous: transient processing fault, downstream degradation, or malformed downstream response. Classify against context before acting. Usually clears on silent retry with backoff; customer contact adds nothing when the fault is upstream of them.",
+      "actions": ["silent_retry"]
+    },
+    {
+      "id": "network-retry-window",
+      "code": null,
+      "title": "Card network retry ceilings",
+      "text": "Visa and Mastercard cap merchant-initiated retries on a declined card: at most 15 attempts in 30 days (Visa) and category-dependent ceilings on Mastercard, with excessive-retry fees beyond them. Any retry scheduler must track a rolling 30-day attempt count per instrument and hard-stop at the ceiling.",
+      "actions": []
+    },
+    {
+      "id": "tcccpr-transactional-window",
+      "code": null,
+      "title": "TCCCPR: transactional vs promotional classification",
+      "text": "Under TRAI's TCCCPR framework, a payment-failure message sent within roughly 30 minutes of the triggering transaction qualifies as transactional. Outside that window the same content is promotional-class: requires recorded consent, DND scrubbing, and delivery inside 09:00-21:00 IST. Consent validity is capped at seven days under the amendment.",
+      "actions": []
+    },
+    {
+      "id": "rzp-subscription-retry",
+      "code": null,
+      "title": "Razorpay subscription retry behaviour",
+      "text": "Razorpay Subscriptions retries a failed recurring charge on a fixed schedule: next-day retry, then a T+3 cycle of up to three attempts, after which the subscription is halted. This documented fixed clock is the baseline RecoverOps improves on — it fires regardless of failure cause or customer state.",
+      "actions": []
+    }
+  ]
+}

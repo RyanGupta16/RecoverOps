@@ -1,0 +1,35 @@
+{
+  "name": "recoverops-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "gen": "node scripts/generate-sample-batch.mjs",
+    "frames": "swift scripts/extract-frames.swift assets/agent-background.mp4 public/frames 110 840 0.36",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"scripts/*.mjs\"",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "animejs": "^4.5.0",
+    "next": "16.3.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "recharts": "^3.10.1",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.4",
+    "prettier": "^3.9.6",
+    "puppeteer": "^25.10.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,136 @@
+@import 'tailwindcss';
+
+/* ------------------------------------------------------------------ *
+ * Brand tokens — one palette, two registers.
+ * Register A (editorial / marketing) and Register B (operational /
+ * console) are built from the same values so moving from the pitch to
+ * the product reads as one product, not two apps.
+ * ------------------------------------------------------------------ */
+
+@theme {
+  --color-deep: #0d0a08;
+  --color-ink: #f7f2e8;
+  --color-ink-dim: #cfc6b5;
+  --color-ink-mute: #9a927f;
+  --color-amber: #e8a552;
+  --color-rust: #c86a3c;
+  --color-brass: #b8935a;
+
+  --color-glass: rgba(18, 14, 10, 0.62);
+  --color-glass-hi: rgba(28, 22, 16, 0.78);
+  --color-hairline: rgba(247, 242, 232, 0.14);
+  --color-hairline-hi: rgba(247, 242, 232, 0.28);
+
+  /* Verdict colours for the console. Amber is reserved for PASS-with-action,
+     so BLOCK needs its own hue that still sits inside the warm palette. */
+  --color-verdict-pass: #7fb069;
+  --color-verdict-block: #d4553f;
+
+  --font-display: var(--font-fraunces), Georgia, serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-face), ui-monospace, SFMono-Regular, monospace;
+
+  --radius-card: 18px;
+  --radius-card-lg: 24px;
+
+  --ease-brand: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ------------------------------------------------------------------ */
+
+html {
+  scroll-behavior: smooth;
+  background-color: var(--color-deep);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  background-color: var(--color-deep);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--color-rust);
+  color: var(--color-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-amber);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+@utility display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.04;
+}
+
+/* Elements an Anime.js scope will reveal on scroll. These must be hidden in
+   the server-rendered CSS, not from JavaScript after mount — hiding them later
+   means the browser paints the content, then blanks it, then animates it back,
+   which reads as a flicker on every section.
+
+   `reveal-init` is for components that mark their own targets; `reveal-group`
+   hides the direct children of a <Reveal> wrapper. Anime.js writes inline
+   opacity, which outranks both, and clears it again on revert(). */
+@utility reveal-init {
+  opacity: 0;
+}
+
+@utility reveal-group {
+  & > * {
+    opacity: 0;
+  }
+}
+
+/* If scripting is unavailable, nothing may be permanently invisible. */
+@media (scripting: none) {
+  .reveal-init,
+  .reveal-group > * {
+    opacity: 1;
+  }
+}
+
+/* Hairline top-edge accent on glass cards — the one decorative flourish
+   carried over from the reference's card treatment. */
+@utility card-accent {
+  position: relative;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    height: 1px;
+    background: linear-gradient(90deg, var(--color-amber), transparent 65%);
+  }
+}
+
+@utility hide-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-hairline) transparent;
+
+  &::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--color-hairline);
+    border-radius: 999px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}

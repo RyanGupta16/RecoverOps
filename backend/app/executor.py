@@ -1,0 +1,112 @@
+"""Layer 05 — Executor.
+
+Real Razorpay test-mode API calls when RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET
+are set: payment links for outreach actions, orders for retry scheduling.
+Outbound SMS/WhatsApp delivery is always mocked and labelled mocked — a
+buildathon demo must never message a real number.
+
+Live calls are capped per batch (EXECUTOR_MAX_LIVE_CALLS, default 8): the
+point is to prove the integration is real, not to hammer the sandbox 500
+times per run. Every execution record says exactly which of the three modes
+it took — real call (with the returned id), capped, or mocked-no-keys.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+
+from .sim import Event
+
+try:
+    import razorpay
+except ImportError:  # pragma: no cover
+    razorpay = None
+
+
+class Executor:
+    def __init__(self) -> None:
+        key_id = os.environ.get("RAZORPAY_KEY_ID", "").strip()
+        key_secret = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
+        self.max_live_calls = int(os.environ.get("EXECUTOR_MAX_LIVE_CALLS", "8"))
+        self._lock = threading.Lock()
+        self._live_calls_made = 0
+        self.client = None
+        if razorpay and key_id and key_secret:
+            self.client = razorpay.Client(auth=(key_id, key_secret))
+
+    def start_batch(self) -> None:
+        with self._lock:
+            self._live_calls_made = 0
+
+    def _take_live_slot(self) -> bool:
+        with self._lock:
+            if self.client is None or self._live_calls_made >= self.max_live_calls:
+                return False
+            self._live_calls_made += 1
+            return True
+
+    def execute(self, ev: Event, action: str) -> dict:
+        if action == "escalate":
+            return {"mode": "none", "detail": "No call made. Case routed to the exception queue.", "mocked": False}
+
+        amount_str = f"₹{ev.amount_paise / 100:.2f}"
+        if action == "silent_retry":
+            if self._take_live_slot():
+                try:
+                    order = self.client.order.create(
+                        {
+                            "amount": ev.amount_paise,
+                            "currency": "INR",
+                            "receipt": ev.payment_id[:40],
+                            "notes": {"recoverops": "silent_retry", "subscription": ev.subscription_id},
+                        }
+                    )
+                    return {
+                        "mode": "razorpay_test_mode",
+                        "detail": f"POST /v1/orders → {order['id']} — retry order created, test mode.",
+                        "mocked": False,
+                    }
+                except Exception as exc:  # noqa: BLE001 — an executor failure must not sink the batch
+                    return {
+                        "mode": "razorpay_test_mode",
+                        "detail": f"POST /v1/orders failed ({type(exc).__name__}) — retry recorded locally, test mode.",
+                        "mocked": True,
+                    }
+            note = "call budget reached for this batch" if self.client else "no API keys configured"
+            return {
+                "mode": "razorpay_test_mode",
+                "detail": f"POST /v1/subscriptions/{ev.subscription_id}/retry — test mode ({note}).",
+                "mocked": self.client is None,
+            }
+
+        # Outreach actions: payment link via the real API where allowed.
+        channel = "WhatsApp" if action == "payment_link_whatsapp" else "SMS"
+        kind = "card update" if action == "card_update_request" else "payment link"
+        if self._take_live_slot():
+            try:
+                link = self.client.payment_link.create(
+                    {
+                        "amount": ev.amount_paise,
+                        "currency": "INR",
+                        "description": f"RecoverOps {kind} · {ev.plan_name}",
+                        "notes": {"recoverops": action, "event": ev.event_id},
+                    }
+                )
+                return {
+                    "mode": "razorpay_test_mode",
+                    "detail": f"POST /v1/payment_links → {link['id']} — {kind}, {amount_str}, test mode. {channel} delivery mocked.",
+                    "mocked": True,  # delivery is mocked even when the link is real
+                }
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "mode": "razorpay_test_mode",
+                    "detail": f"POST /v1/payment_links failed ({type(exc).__name__}) — {kind} recorded locally, {amount_str}. {channel} delivery mocked.",
+                    "mocked": True,
+                }
+        note = "call budget reached for this batch" if self.client else "no API keys configured"
+        return {
+            "mode": "razorpay_test_mode",
+            "detail": f"POST /v1/payment_links — {kind}, {amount_str}, test mode ({note}). {channel} delivery mocked.",
+            "mocked": True,
+        }
