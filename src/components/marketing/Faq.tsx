@@ -11,10 +11,15 @@ const ITEMS: FaqItem[] = [
     q: 'Is this actually connected to the Razorpay API?',
     a: (
       <>
-        Yes, in test mode. Orders, payment links and subscription retries are real SDK calls against
-        Razorpay&rsquo;s test environment, and the executor records the endpoint it hit on every
-        decision trace. Outbound SMS and WhatsApp delivery is mocked — we do not send messages to
-        anyone — and every screen that shows an outbound action labels it as mocked.
+        Yes, in test mode. Orders, payment links, invoices and virtual accounts are real SDK calls
+        against Razorpay&rsquo;s test environment, and the payment-downtime feed is read live from
+        the account — the outages it declares hold real decisions in the batch. The executor records
+        the endpoint it hit on every decision trace. One thing it deliberately does{' '}
+        <em>not</em> claim: Razorpay exposes no merchant-initiated retry for a subscription, so a
+        failed charge is left in <span className="font-mono text-[13px]">pending</span> for
+        Razorpay&rsquo;s own T+1 schedule and the trace says exactly that. Outbound SMS and WhatsApp
+        delivery is mocked — we do not send messages to anyone — and every screen that shows an
+        outbound action labels it as mocked.
       </>
     ),
   },

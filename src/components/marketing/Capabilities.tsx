@@ -57,7 +57,7 @@ const TILES: Tile[] = [
   {
     glyph: '↗',
     title: 'Real test-mode execution',
-    body: 'Orders, payment links and subscription retries are genuine Razorpay test-mode API calls. Outbound SMS and WhatsApp delivery is mocked, and says so wherever it appears.',
+    body: 'Orders, payment links, invoices and virtual accounts are genuine Razorpay test-mode API calls, and the payment-downtime feed is read live. Razorpay exposes no merchant retry endpoint, so a failed subscription charge waits on its own T+1 schedule — the trace says so rather than inventing a call. Outbound SMS and WhatsApp delivery is mocked, and says so wherever it appears.',
     span: 3,
   },
 ];

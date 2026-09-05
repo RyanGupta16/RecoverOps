@@ -2,14 +2,14 @@ import { Reveal } from '@/components/motion/Reveal';
 import { ButtonLink, EyebrowLabel, Section } from '@/components/ui/primitives';
 
 /**
- * Placeholders here are marked, not invented. Team name, members, contact
- * address, repo URL and video URL are the submitter's to fill in — writing
- * plausible-looking values would be exactly the kind of fabrication the rest of
- * this site is built to avoid.
+ * What is still missing is marked, not invented. Writing a plausible-looking
+ * demo-video URL would be exactly the kind of fabrication the rest of this site
+ * argues against, so the gap stays visible until it is filled.
  */
 const PLACEHOLDER = 'TODO — fill in before submitting';
 
 const REPO_URL = 'https://github.com/RyanGupta16/RecoverOps';
+const AUTHOR = 'Ryan Gupta (@RyanGupta16)';
 
 const LINKS = [
   { label: 'GitHub repository', value: REPO_URL, href: REPO_URL },
@@ -22,8 +22,15 @@ const STACK = [
   ['Motion', 'Anime.js v4 — the only animation engine in the bundle'],
   ['Charts', 'Recharts, with the line-draw layered on by Anime.js'],
   ['Backend', 'Python, FastAPI, Server-Sent Events for batch progress'],
-  ['Payments', 'Razorpay SDK, test mode — orders, payment links, subscription retries'],
-  ['Evaluation', 'Seeded synthetic batch generator with known causal ground truth'],
+  ['Uplift', 'Five CATE estimators benchmarked on a 100k randomised split; the winner ships'],
+  [
+    'Payments',
+    'Razorpay SDK, test mode — orders, payment links, invoices, virtual accounts, and the live payment-downtime feed',
+  ],
+  ['Diagnosis', 'Claude Haiku on the two ambiguous reason codes, grounded in BM25 corpus hits'],
+  ['Voice', 'Sarvam bulbul:v3 and saaras:v3 for Hinglish speech; the telephony line is simulated'],
+  ['Ledger', 'SQLite in WAL mode with an append-only, hash-chained audit log'],
+  ['Evaluation', 'Seeded synthetic batches with known ground truth, plus a randomised control arm on real data'],
 ];
 
 export function Submission() {
@@ -76,12 +83,11 @@ export function Submission() {
                 ))}
                 <div className="border-t border-hairline pt-4">
                   <dt className="font-mono text-[10px] uppercase tracking-[0.16em] text-ink-mute">
-                    Team
+                    Built by
                   </dt>
-                  <dd className="mt-1.5">
-                    <span className="rounded bg-rust/[0.16] px-2 py-1 font-mono text-[12px] text-[#e08b60]">
-                      {PLACEHOLDER} — team name, members, contact email
-                    </span>
+                  <dd className="mt-1.5 text-[14px] text-ink-dim">
+                    {AUTHOR}
+                    <span className="ml-2 font-mono text-[11px] text-ink-mute">solo build</span>
                   </dd>
                 </div>
               </dl>
@@ -110,9 +116,10 @@ export function Submission() {
                   Regenerating the batch
                 </h4>
                 <p className="mt-2.5 text-[13px] leading-relaxed text-ink-dim">
-                  The evaluation batch is produced by a seeded generator, so it is byte-identical on
-                  every run and every claim on this site can be traced back to code rather than to a
-                  screenshot.
+                  The bundled batch is produced by the same engine, gate and estimators that run
+                  live, from a fixed seed — so it is byte-identical on every run, there is no second
+                  implementation of anything, and every claim on this site traces back to code rather
+                  than to a screenshot.
                 </p>
                 <code className="mt-3 block rounded bg-deep/60 px-3 py-2 font-mono text-[12px] text-amber">
                   npm run gen
