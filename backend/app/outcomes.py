@@ -135,9 +135,12 @@ class OutcomeTracker:
                 return Attribution(bid, eid, False, True, "poll:subscription", f"Subscription {leak['subscription_id']} is {status}.")
 
         # Last resort: a captured payment from the same counterparty for the
-        # same amount after the failure.
-        cid = leak.get("counterparty_id")
-        if cid and str(cid).startswith("cust_") and not str(cid).startswith("cust_" + "0" * 0):
+        # same amount after the failure. Only valid for a customer id Razorpay
+        # actually issued — an id we fabricated from a contact (anon_…) means
+        # nothing to their API, and searching by it would silently match
+        # nothing while looking like it had checked.
+        cid = str(leak.get("counterparty_id") or "")
+        if cid.startswith("cust_"):
             since = _epoch(leak.get("failed_at"))
             page = c.payment.all({"count": 50, "from": since} if since else {"count": 50})
             for p in page.get("items", []):

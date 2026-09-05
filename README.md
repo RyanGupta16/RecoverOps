@@ -216,7 +216,30 @@ presses Run. To seed history and case memory on a fresh clone:
 cd backend && .venv/bin/python -m app.seed --batches 3
 ```
 
-Backend tests: `cd backend && .venv/bin/python -m pytest tests -q`.
+### Verification
+
+```bash
+python3 scripts/verify.py           # 430 tests, hermetic — no credentials touched
+python3 scripts/verify.py --live    # also runs against the real Razorpay account
+```
+
+`scripts/verify.py` prints each suite alongside the property it establishes,
+because a green count says nothing about which guarantees hold. The suites:
+
+| Suite | What it establishes |
+| ----- | ------------------- |
+| **Compliance red-team** (48) | Deliberate attempts to slip a prohibited action past the gate — fraud holds, disputes, live promises, hard declines, mixed-content promotional messages, AFA ceilings, NPCI windows, network reattempt caps, statutory claims. |
+| **Razorpay conformance** (171) | All 109 published `error_reason` strings, every `error_source`/`error_step`, every payment method, subscription and invoice state, the real downtime payloads, and the webhook vocabulary checked against Razorpay's published event list. |
+| **Money · privacy · integrity** (21) | Every money field is integer paise and net value reconciles exactly; no phone or email reaches the ledger, traces or audit log; editing, deleting, inserting or re-hashing an audit row is detected. |
+| **HTTP API contract** (23) | Every endpoint, its status codes, and validation that refuses bad input rather than half-processing it. |
+| **Hostile input · scale** (34) | Truncated and mis-encoded uploads, injection strings, negative amounts, replayed webhooks, concurrent audit writes, 2,000-event batches, determinism by seed. |
+| **Outcome attribution** (19) | How a decision becomes a measured result — and how it fails safely when Razorpay is unreachable or silent. |
+
+The suite is hermetic: `conftest.py` strips credentials and redirects the upload
+directory, so it behaves identically on a machine with API keys and one without.
+Live-API tests are marked and skipped unless `RECOVEROPS_LIVE=1`.
+
+Backend tests directly: `cd backend && .venv/bin/python -m pytest tests -q`.
 
 ## Scripts
 

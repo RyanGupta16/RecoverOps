@@ -63,3 +63,48 @@ def test_absent_numeric_env_uses_the_default(monkeypatch):
     _no_keys(monkeypatch)
     monkeypatch.delenv("EXECUTOR_MAX_LIVE_CALLS", raising=False)
     assert Executor().max_live_calls == DEFAULT_MAX_LIVE_CALLS
+
+
+class _RefusingClient:
+    """A Razorpay client that fails the way a real one does when a test-mode
+    quota is exhausted — the exact condition this account is now in."""
+
+    class _Fails:
+        def __init__(self, msg): self.msg = msg
+        def create(self, *_a, **_k): raise RuntimeError(self.msg)
+
+    def __init__(self, msg="test mode limit of 30 reached for payment_link"):
+        self.payment_link = _RefusingClient._Fails(msg)
+        self.order = _RefusingClient._Fails(msg)
+
+
+def test_the_executor_degrades_when_razorpay_refuses(monkeypatch):
+    """When Razorpay rejects a call — quota exhausted, product not enabled, an
+    outage — the batch must still complete, and the execution record must say
+    the call failed rather than implying it succeeded."""
+    _no_keys(monkeypatch)
+    ex = Executor()
+    ex.client = _RefusingClient()
+    ev = generate_events(11, count=1)[0]
+
+    for action in ("silent_retry", "payment_link_sms", "payment_link_whatsapp"):
+        rec = ex.execute(ev, action)
+        assert rec["mocked"] is True, f"{action} claimed a real call after a refusal"
+        assert rec["externalId"] is None, "no external id may be reported for a failed call"
+        assert "failed" in rec["detail"].lower() or "not created" in rec["detail"].lower()
+
+
+def test_a_refusing_razorpay_does_not_sink_the_batch(monkeypatch, tmp_path):
+    """The whole point of catching executor errors: one refused API call must
+    not lose the other 199 decisions in the batch."""
+    _no_keys(monkeypatch)
+    from app.runtime import Runtime
+
+    rt = Runtime.build(store_path=tmp_path / "refuse.db")
+    rt.executor.client = _RefusingClient()
+    summary = rt.run_and_store("simulator", seed=17, count=200)
+    assert summary["eventCount"] == 200
+    assert rt.store.verify_audit()["ok"] is True
+    batch = rt.store.get_batch(summary["batchId"])
+    traces = [rt.store.get_trace(e["eventId"], summary["batchId"]) for e in batch["events"]]
+    assert all(t["agentB"]["execution"]["externalId"] is None for t in traces)

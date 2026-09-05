@@ -23,3 +23,19 @@ def _no_real_credentials(monkeypatch):
     """Belt and braces: a test that constructs a layer directly still sees no keys."""
     for var in ("RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "ANTHROPIC_API_KEY", "SARVAM_API_KEY"):
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_upload_dir(tmp_path_factory):
+    """FileSource defaults to backend/data/uploads — a real directory the app
+    reads at runtime. Left alone, the suite writes uploaded fixtures into the
+    developer's own data (79 stray files before this was noticed) and tests
+    read each other's uploads. Point the default at a throwaway directory for
+    the whole session."""
+    import app.sources as sources
+
+    original = sources.UPLOAD_DIR
+    scratch = tmp_path_factory.mktemp("uploads")
+    sources.UPLOAD_DIR = scratch
+    yield
+    sources.UPLOAD_DIR = original

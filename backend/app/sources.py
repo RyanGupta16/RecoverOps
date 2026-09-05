@@ -304,7 +304,11 @@ def normalize_payment(
         subscription_id=subscription_id,
         invoice_id=str(invoice_id) if invoice_id else None,
         order_id=_get(p, "order_id"),
-        customer_id=customer_id or f"cust_{_hash_id(counterparty_key)}",
+        # A real Razorpay customer id keeps its cust_ prefix; one we fabricate
+        # from a contact or an email is prefixed anon_ so downstream code can
+        # tell the difference. Outcome attribution searches Razorpay by
+        # customer, which is only valid for an id Razorpay actually issued.
+        customer_id=customer_id or f"anon_{_hash_id(counterparty_key)}",
         counterparty_type="consumer",
         contact=str(contact) if contact else None,
         email=str(email) if email else None,
@@ -562,7 +566,10 @@ class FileSource:
     name = "file"
 
     def __init__(self, upload_dir: Path | None = None) -> None:
-        self.dir = upload_dir or UPLOAD_DIR
+        # Resolved through the module global rather than captured at import, so
+        # a test session can redirect the default away from the app's real data
+        # directory without every construction site having to pass a path.
+        self.dir = Path(upload_dir) if upload_dir else UPLOAD_DIR
         self.dir.mkdir(parents=True, exist_ok=True)
 
     def describe(self) -> dict:
