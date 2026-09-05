@@ -58,60 +58,79 @@ SCRIPT = {
 # Saaras returns code-mixed transcripts in mixed script — Hindi in Devanagari,
 # English in Latin ("मैं कल तक payment कर दूँगा।") — so every pattern has to
 # match both. Matching only the romanisation silently drops real promises,
-# which is the worst possible failure here: a promise heard and not recorded
-# is a customer who gets chased anyway.
+# which is the worst possible failure here.
+#
+# Every term is boundary-guarded, and Devanagari cannot use \b for it. Python's
+# \b is defined on \w, which excludes the combining vowel signs (Mc/Mn) that
+# most Hindi words end in: \bदूँगा\b does NOT match "कर दूँगा", because the
+# final ा is not a word character. Meanwhile an unguarded term matches inside
+# longer words — bare मत fires on मतलब ("meaning"), bare कल on आजकल
+# ("nowadays"), turning ordinary filler into a refusal or a fabricated promise
+# date. So Devanagari terms are wrapped in explicit block lookarounds, which
+# treat every Devanagari character — letters and matras alike — as word-internal.
+
+DEVANAGARI = r"ऀ-ॿ"
+
+
+def _term(word: str) -> str:
+    """One alternative, boundary-guarded in whichever script it is written."""
+    if word.isascii():
+        return rf"\b{word}\b"
+    return rf"(?<![{DEVANAGARI}]){word}(?![{DEVANAGARI}])"
+
+
+def _alt(*words: str) -> str:
+    return "|".join(_term(w) for w in words)
+
+
+PROMISE_TERMS = (
+    # Romanised
+    "kal", "parso", "tomorrow", "salary", "dunga", "doonga", "karunga", "karoonga",
+    "kar dunga", "kar doonga", "ho jayega", "ho jaayega",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    # Devanagari: tomorrow / day after / date / salary / "will do" / "it'll happen"
+    "कल", "परसों", "परसो", "तारीख", "तारिख", "सैलरी", "तनख्वाह", "वेतन",
+    "दूँगा", "दूंगा", "दूगा", "देंगे", "दूँगी", "दूंगी",
+    "करूँगा", "करूंगा", "करूँगी", "करूंगी", "करेंगे", "कर दूँगा", "कर दूंगा",
+    "हो जाएगा", "हो जायेगा", "भर दूँगा", "भर दूंगा",
+    "सोमवार", "मंगलवार", "बुधवार", "गुरुवार", "शुक्रवार", "शनिवार", "रविवार",
+)
+SEND_LINK_TERMS = (
+    "link", "bhej", "bhejo", "bhejiye", "send", "abhi", "now", "whatsapp", "sms",
+    "लिंक", "भेज", "भेजिए", "भेजो", "अभी", "व्हाट्सएप", "व्हाट्सऐप", "एसएमएस",
+)
+DISPUTE_TERMS = (
+    "galat", "wrong", "dispute", "refund", "cancel kar diya", "nahi liya",
+    "ग़लत", "गलत", "कैंसिल", "कैन्सल", "रद्द", "रिफंड", "रिफ़ंड", "नहीं लिया", "वापस",
+)
+DECLINE_TERMS = (
+    "nahi", "nahin", "no", "mat", "band", "stop", "pareshan",
+    "नहीं", "नही", "मत", "बंद", "बन्द", "परेशान", "रुकिए", "रोक",
+)
+# "phir" alone means "then" and shows up in "link bhej do, phir pay karta hoon",
+# which is a link request, not a deferral. Only the explicitly deferring forms
+# belong here.
+CALLBACK_TERMS = (
+    "baad mein", "baad me", "later", "busy", "call back", "callback",
+    "phir se", "baad mein call", "abhi nahi",
+    "बाद में", "बाद मे", "व्यस्त", "बिज़ी", "बिजी", "फिर से", "दोबारा", "अभी नहीं",
+)
+
 INTENT_PATTERNS: list[tuple[str, re.Pattern]] = [
-    (
-        "promise",
-        re.compile(
-            r"\b(\d{1,2})\s*(tarikh|tareekh|date)\b|\bkal\b|\bparso\b"
-            r"|\bfriday|monday|tuesday|wednesday|thursday|saturday|sunday\b"
-            r"|\bsalary\b|\bpay\s*kar\s*d|\bkar\s*dunga\b|\bdunga\b"
-            # Devanagari: कल (tomorrow), परसों (day after), तारीख (date),
-            # सैलरी / तनख्वाह (salary), कर दूँगा / दूंगा / देंगे (will pay).
-            r"|कल|परसों|तारीख|तारिख|सैलरी|तनख्वाह|दूँगा|दूंगा|दूगा|देंगे|कर\s*दूँ|कर\s*दुं|हो\s*जाएगा|हो\s*जायेगा",
-            re.I,
-        ),
-    ),
-    (
-        "send_link",
-        re.compile(
-            r"\blink\b|\bbhej\b|\bsend\b|\babhi\b|\bnow\b|\bwhatsapp\b|\bsms\b"
-            r"|लिंक|भेज|अभी|व्हाट्सएप|व्हाट्सऐप|एसएमएस",
-            re.I,
-        ),
-    ),
-    (
-        "dispute",
-        re.compile(
-            r"\bgalat\b|\bwrong\b|\bnahi liya\b|\bcancel kar diya\b|\bdispute\b|\brefund\b"
-            r"|ग़लत|गलत|कैंसिल|कैन्सल|रद्द|रिफंड|रिफ़ंड|वापस\s*कर|नहीं\s*लिया",
-            re.I,
-        ),
-    ),
-    (
-        "decline",
-        re.compile(
-            r"\bnahi\b|\bno\b|\bmat\b|\bband\b|\bstop\b|\bcall mat\b|\bpareshan\b"
-            r"|नहीं|नही|मत|बंद|बन्द|परेशान|रुक",
-            re.I,
-        ),
-    ),
-    (
-        "callback",
-        re.compile(
-            r"\bbaad mein\b|\blater\b|\bbusy\b|\bcall back\b|\bphir\b"
-            r"|बाद\s*में|बाद\s*मे|व्यस्त|बिज़ी|बिजी|फिर\s*से|दोबारा",
-            re.I,
-        ),
-    ),
+    ("promise", re.compile(rf"{_alt(*PROMISE_TERMS)}|\b(\d{{1,2}})\s*(?:tarikh|tareekh|date)\b", re.I)),
+    ("send_link", re.compile(_alt(*SEND_LINK_TERMS), re.I)),
+    ("dispute", re.compile(_alt(*DISPUTE_TERMS), re.I)),
+    ("decline", re.compile(_alt(*DECLINE_TERMS), re.I)),
+    ("callback", re.compile(_alt(*CALLBACK_TERMS), re.I)),
 ]
 
 DAY_WORDS = {"kal": 1, "parso": 2, "tomorrow": 1, "कल": 1, "परसों": 2, "परसो": 2}
 WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
 WEEKDAYS_HI = {"सोमवार": 0, "मंगलवार": 1, "बुधवार": 2, "गुरुवार": 3, "शुक्रवार": 4, "शनिवार": 5, "रविवार": 6}
 SALARY_WORDS = ("salary", "सैलरी", "तनख्वाह", "वेतन")
-DATE_WORDS = r"(?:tarikh|tareekh|date|तारीख|तारिख|को)"
+# "18 tarikh", "18 ko", "१८ को" — the ASCII forms keep their trailing \b so
+# "12 dated" does not read as the 12th; the Devanagari form uses the block guard.
+DATE_TAIL = r"(?:\b(?:tarikh|tareekh|date|ko)\b|(?<![ऀ-ॿ])(?:तारीख|तारिख|को)(?![ऀ-ॿ]))"
 
 # Devanagari digits, so "१२ तारीख" parses the same as "12 tarikh".
 _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
@@ -129,11 +148,12 @@ def classify_intent(text: str) -> tuple[str, float]:
     hits = [name for name, pat in INTENT_PATTERNS if pat.search(t)]
     if not hits:
         return "unclear", 0.3
-    # Order matters where a reply hits several patterns. An objection outranks
-    # a promise, because mishearing "this is wrong" as "I'll pay" keeps chasing
+    # Order matters where a reply hits several patterns. An objection outranks a
+    # promise, because mishearing "this is wrong" as "I'll pay" keeps chasing
     # someone with a grievance. A deferral outranks a link request, because
-    # "abhi busy hoon, baad mein call kijiye" contains "abhi" but is a request
-    # to stop, not to send — and acting on the wrong half is the intrusive error.
+    # "abhi busy hoon, baad mein call kijiye" contains "abhi" but asks us to
+    # stop — and CALLBACK_TERMS is kept narrow so a plain "phir" cannot swallow
+    # a genuine link request.
     for priority in ("dispute", "decline", "promise", "callback", "send_link"):
         if priority in hits:
             return priority, 0.9 if len(hits) == 1 else 0.7
@@ -147,18 +167,16 @@ def extract_promise_date(text: str, now: datetime | None = None) -> datetime | N
     t = normalise_digits(text).lower()
 
     for word, days in DAY_WORDS.items():
-        pattern = rf"\b{word}\b" if word.isascii() else word
-        if re.search(pattern, t):
+        if re.search(_term(word), t):
             return (now + timedelta(days=days)).replace(hour=12, minute=0, second=0, microsecond=0)
 
-    for table, ascii_only in ((WEEKDAYS, True), (WEEKDAYS_HI, False)):
+    for table in (WEEKDAYS, WEEKDAYS_HI):
         for name, idx in table.items():
-            pattern = rf"\b{name}\b" if ascii_only else name
-            if re.search(pattern, t):
+            if re.search(_term(name), t):
                 ahead = (idx - now.weekday()) % 7 or 7
                 return (now + timedelta(days=ahead)).replace(hour=12, minute=0, second=0, microsecond=0)
 
-    m = re.search(rf"\b(\d{{1,2}})\s*{DATE_WORDS}", t)
+    m = re.search(rf"\b(\d{{1,2}})\s*{DATE_TAIL}", t)
     if m:
         day = int(m.group(1))
         if 1 <= day <= 31:
@@ -171,7 +189,7 @@ def extract_promise_date(text: str, now: datetime | None = None) -> datetime | N
             except ValueError:
                 return None
 
-    if any(w in t for w in SALARY_WORDS):
+    if any(re.search(_term(w), t) for w in SALARY_WORDS):
         ist_now = now.astimezone(IST)
         month, year = (1, ist_now.year + 1) if ist_now.month == 12 else (ist_now.month + 1, ist_now.year)
         return datetime(year, month, 1, 12, 0, tzinfo=IST).astimezone(timezone.utc)

@@ -71,8 +71,11 @@ class Diagnoser:
         # that can change what the policy does. Where the two disagree, both
         # are shown — a persistent disagreement means the taxonomy needs fixing
         # at the mapping, not smoothing over per event.
+        # None means no model actually answered — no key, or the call failed.
+        # In that case the trace must make no claim about what a model thought.
         model_side = cached["failure_side"]
-        disagrees = model_side != ev.failure_side
+        consulted = model_side is not None
+        disagrees = consulted and model_side != ev.failure_side
         note = cached["note"]
         if disagrees:
             note = (
@@ -86,9 +89,10 @@ class Diagnoser:
             "reasonLabel": ev.reason_label,
             # What the gate actually used.
             "failureSide": ev.failure_side,
-            # What the model thought, kept separate and labelled.
+            # What the model thought, kept separate and labelled. All three
+            # stay falsy when no model was consulted.
             "modelFailureSide": model_side,
-            "modelAdvisory": True,
+            "modelAdvisory": consulted,
             "disagreesWithGate": disagrees,
             "latencyMs": cached["latency_ms"],
             "note": note,
@@ -100,7 +104,10 @@ class Diagnoser:
 
         if not self.api_key:
             return {
-                "failure_side": ev.failure_side,
+                # No model answered. Echoing the deterministic side back here
+                # would render as "model reads: issuer-side · advisory" for a
+                # call that never happened.
+                "failure_side": None,
                 "latency_ms": 0,
                 "note": (
                     "Reason code is ambiguous. LLM fallback is configured but ANTHROPIC_API_KEY is not set — "
@@ -139,7 +146,8 @@ class Diagnoser:
             }
         except Exception as exc:  # noqa: BLE001 — any API failure degrades to the lookup, never crashes a batch
             return {
-                "failure_side": ev.failure_side,
+                # The call failed, so there is no model opinion to report.
+                "failure_side": None,
                 "latency_ms": int((time.perf_counter() - t0) * 1000),
                 "note": f"LLM fallback attempted but failed ({type(exc).__name__}) — resolved from the corpus retrieval instead.",
             }

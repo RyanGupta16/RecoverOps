@@ -73,3 +73,27 @@ def test_llm_classification_is_advisory_and_never_gates():
     plain = next(e for e in generate_events(3, count=400) if not e.ambiguous)
     det = d.diagnose(plain)
     assert det["modelFailureSide"] is None and det["modelAdvisory"] is False
+
+
+def test_no_model_claim_is_made_when_no_model_answered():
+    """Both non-model paths — no API key, and a failed call — must report no
+    model opinion. Echoing the deterministic side back would render a
+    'model reads … advisory' row in the console for a call that never happened."""
+    from app.diagnosis import Diagnoser
+    from app.retrieval import Corpus
+    from app.sim import generate_events
+
+    ev = next(e for e in generate_events(3, count=400) if e.ambiguous)
+
+    no_key = Diagnoser(Corpus())
+    assert no_key.api_key == "", "the suite runs without credentials"
+    out = no_key.diagnose(ev)
+    assert out["failureSide"] == ev.failure_side
+    assert out["modelFailureSide"] is None
+    assert out["modelAdvisory"] is False and out["disagreesWithGate"] is False
+
+    failed = Diagnoser(Corpus())
+    failed.api_key = "present-but-the-call-fails"
+    failed._cache[ev.reason_code] = {"failure_side": None, "latency_ms": 120, "note": "call failed."}
+    out = failed.diagnose(ev)
+    assert out["modelFailureSide"] is None and out["modelAdvisory"] is False

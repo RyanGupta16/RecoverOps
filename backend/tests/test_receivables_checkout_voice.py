@@ -241,8 +241,7 @@ def test_intent_classification_prioritises_objections():
 def test_intent_and_dates_work_on_devanagari_transcripts():
     """Saaras returns code-mixed transcripts in mixed script. Matching only the
     romanisation would silently drop real promises — the worst failure here."""
-    # Verbatim output from Sarvam saaras:v3 for "kal tak payment kar dunga".
-    real = "मैं कल तक payment कर दूँगा।"
+    real = "मैं कल तक payment कर दूँगा।"  # verbatim saaras:v3 output
     assert classify_intent(real)[0] == "promise"
     assert extract_promise_date(real, NOW).date() == (NOW + timedelta(days=1)).date()
 
@@ -251,19 +250,58 @@ def test_intent_and_dates_work_on_devanagari_transcripts():
     assert classify_intent("मैंने तो कैंसिल कर दिया था, ये गलत है")[0] == "dispute"
     assert classify_intent("अभी busy हूँ, बाद में call कीजिए")[0] == "callback"
 
-    # Devanagari digits parse as dates.
     ist = timezone(timedelta(hours=5, minutes=30))
     assert extract_promise_date("१२ तारीख तक कर दूँगा", NOW).astimezone(ist).day == 12
     assert extract_promise_date("सैलरी आते ही कर दूँगा", NOW).astimezone(ist).day == 1
-    # Still conservative in either script.
     assert extract_promise_date("जल्दी कर दूँगा", NOW) is None
 
 
-def test_promise_date_extraction_is_conservative():
-    assert extract_promise_date("kal kar dunga", NOW).date() == (NOW + timedelta(days=1)).date()
-    assert extract_promise_date("12 tarikh tak", NOW).astimezone(timezone(timedelta(hours=5, minutes=30))).day == 12
-    assert extract_promise_date("salary aate hi", NOW).astimezone(timezone(timedelta(hours=5, minutes=30))).day == 1
-    assert extract_promise_date("jaldi kar dunga", NOW) is None, "an unparseable promise must be no promise"
+@pytest.mark.parametrize(
+    "text,intent",
+    [
+        # मत is inside मतलब ("meaning"), one of the commonest Hindi fillers.
+        ("हाँ मतलब link भेज दीजिए", "send_link"),
+        ("पैसे कल आएंगे मतलब", "promise"),
+        # रुक is inside शुरुकर.
+        ("शुरुकर दिया है", "unclear"),
+        # कल is inside आजकल ("nowadays") — this one fabricated a promise date.
+        ("आजकल थोड़ी दिक्कत है", "unclear"),
+        # "phir" means "then": these are link requests, not deferrals.
+        ("link bhej do, phir dekhta hoon", "send_link"),
+        ("WhatsApp par link bhej do, phir pay karta hoon", "send_link"),
+    ],
+)
+def test_terms_do_not_match_inside_longer_words(text, intent):
+    r"""Python's \b is defined on \w, which excludes Devanagari matras, so a
+    bare term matches word-internally and \b cannot fix it. Terms are guarded
+    with Devanagari block lookarounds instead."""
+    assert classify_intent(text)[0] == intent
+
+
+def test_no_date_is_invented_from_a_word_containing_kal():
+    assert extract_promise_date("आजकल थोड़ी दिक्कत है", NOW) is None
+    assert extract_promise_date("12 dated hone se pehle", NOW) is None
+
+
+@pytest.mark.parametrize(
+    "text,day",
+    [
+        ("मैं १८ को payment करूँगा", 18),      # करूँगा is the commonest promise verb
+        ("18 ko payment kar dunga", 18),        # romanised "ko"
+        ("मैं 20 तारीख को भर दूँगा", 20),
+    ],
+)
+def test_common_promise_forms_classify_and_parse(text, day):
+    """A promise the date parser understands but the intent classifier misses is
+    a promise thrown away: run_call only extracts a date when intent is promise."""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    assert classify_intent(text)[0] == "promise", text
+    assert extract_promise_date(text, NOW).astimezone(ist).day == day
+
+
+def test_devanagari_weekdays_classify_as_promises():
+    assert classify_intent("अगले शुक्रवार को payment करूँगा")[0] == "promise"
+    assert extract_promise_date("अगले शुक्रवार को payment करूँगा", NOW) is not None
 
 
 def test_call_without_a_sarvam_key_produces_a_script_and_says_so(merchant):
