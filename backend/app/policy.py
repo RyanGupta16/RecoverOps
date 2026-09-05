@@ -33,9 +33,23 @@ from .merchant import MerchantConfig
 
 PASS, BLOCK, NA = "PASS", "BLOCK", "N/A"
 
-CONTACT_ACTIONS = {"payment_link_sms", "payment_link_whatsapp", "card_update_request", "incentive_link"}
+CONTACT_ACTIONS = {
+    "payment_link_sms",
+    "payment_link_whatsapp",
+    "card_update_request",
+    "incentive_link",
+    "invoice_reminder",
+    "statement_of_account",
+    "virtual_account",
+    "msmed_notice",
+    "cart_reminder",
+    "cart_incentive",
+    "voice_call",
+}
 RETRY_ACTIONS = {"silent_retry", "retry_scheduled"}
-INCENTIVE_ACTIONS = {"incentive_link"}
+INCENTIVE_ACTIONS = {"incentive_link", "cart_incentive"}
+VOICE_ACTIONS = {"voice_call"}
+STATUTORY_ACTIONS = {"msmed_notice"}
 
 ACTION_LABELS = {
     "silent_retry": "Silent retry",
@@ -44,6 +58,13 @@ ACTION_LABELS = {
     "payment_link_whatsapp": "Payment link · WhatsApp",
     "card_update_request": "Card update request",
     "incentive_link": "Incentive link",
+    "invoice_reminder": "Invoice reminder",
+    "statement_of_account": "Statement of account",
+    "virtual_account": "Virtual account for bank transfer",
+    "msmed_notice": "MSMED statutory interest notice",
+    "cart_reminder": "Cart reminder",
+    "cart_incentive": "Cart reminder with incentive",
+    "voice_call": "Hinglish voice call",
     "escalate": "Escalated to human queue",
     "no_action": "No action",
 }
@@ -51,6 +72,22 @@ ACTION_LABELS = {
 NOT_EVALUATED = "Not evaluated — an earlier rule already blocked this action."
 NO_MESSAGE = "No outbound message in this action."
 NO_CHARGE = "No charge attempt in this action."
+
+# NPCI non-peak execution windows for UPI Autopay (IST), May 2026 onward.
+MANDATE_WINDOWS = ((0, 10), (13, 17), (21, 24))
+MANDATE_WINDOW_LABEL = "before 10:00, 13:00–17:00, or after 21:00 IST"
+
+
+def in_mandate_window(hour: int) -> bool:
+    return any(lo <= hour < hi for lo, hi in MANDATE_WINDOWS)
+
+
+def next_mandate_window_hour(hour: int) -> int:
+    """The next permissible execution hour at or after `hour`."""
+    for h in range(hour, hour + 24):
+        if in_mandate_window(h % 24):
+            return h % 24
+    return hour
 
 
 @dataclass(frozen=True)
@@ -67,6 +104,8 @@ RULES: list[Rule] = [
     Rule("NO_RETRY_ON_FRAUD", "risk", "Hard block on suspected-fraud and risk-hold reason codes. Never retried, never contacted.", None, "card-scheme rules; product policy"),
     Rule("HARD_DECLINE_NO_RETRY", "risk", "A hard decline for the instrument — expired, blocked, closed, revoked — is never retried on the same instrument. Only an instrument change can fix it.", "Visa reattempt rules", "Visa Category-1 declines are never reattempted; Mastercard equivalent"),
     Rule("STOP_ON_DISPUTE", "risk", "No action of any kind while a dispute or chargeback is open on the counterparty.", None, "fairness; product policy"),
+    Rule("PTP_ACTIVE_HOLD", "risk", "While a promise to pay is live, nothing happens on that counterparty — not outreach, not a silent retry. The agreed date is the agreement.", "RBI recovery-agent norms", "RBI fair-practices code; collections practice"),
+    Rule("DEGRADATION_HOLD", "risk", "No customer-facing action on an instrument inside a live degradation cohort — declared by Razorpay's downtime feed or detected in our own success rate. Auto-releases when it clears.", "Razorpay payment downtime feed", "Razorpay downtime API; own changepoint detector"),
     Rule("MERCHANT_SIDE_NO_CONTACT", "risk", "Merchant-side failures (error_source = business) are not the customer's problem: zero customer contact, routed to merchant operations.", None, "Razorpay error taxonomy; product policy"),
     Rule("MSG_CLASS_TCCCPR_2025", "compliance", "Classify the message: transactional only if the customer initiated the transaction and it is within 30 minutes; service if it informs about a product the customer holds; promotional otherwise.", "TCCCPR 2025 cl. 2(bt), 2(bh), 2(au)", "TRAI TCCCPR Second Amendment, 12 Feb 2025"),
     Rule("MIXED_CONTENT_IS_PROMOTIONAL", "compliance", "Any incentive, discount or win-back offer reclassifies the whole message as promotional and re-gates it.", "TCCCPR 2025 cl. 2(au) proviso", "TRAI TCCCPR Second Amendment, 12 Feb 2025"),
@@ -74,13 +113,19 @@ RULES: list[Rule] = [
     Rule("DUES_CONTACT_WINDOW_0800_1900", "compliance", "Anything that reads as dues collection — overdue receivables, broken-promise follow-ups — is contacted only 08:00–19:00 IST, on any channel.", "RBI recovery-agent norms", "RBI circular on recovery agents, Aug 2022; reinforced 2024–25"),
     Rule("DND_SCRUB_PROMOTIONAL", "compliance", "Promotional-class messages are scrubbed against the preference register and need a consent record; blocked otherwise.", "TCCCPR", "TRAI TCCCPR Preference and Consent Registers"),
     Rule("CONSENT_PURPOSE_MATCH", "compliance", "Promotional outreach needs a consent record whose purpose covers it; explicit consent given to complete a purchase expires after seven days.", "DPDP Rules 2025 · TCCCPR 2025 cl. 2(bh)", "DPDP Act 2023 (Rules notified 14 Nov 2025); TCCCPR seven-day consent"),
+    Rule("NO_THIRD_PARTY_CONTACT", "compliance", "Only the counterparty or a guarantor may be contacted about dues — never a relative, colleague or reference.", "RBI recovery-agent norms", "RBI circular on recovery agents, Aug 2022"),
     Rule("MANDATE_ATTEMPT_CAP_4", "frequency", "A UPI Autopay or e-mandate cycle allows one execution plus three retries. Four attempts used means no more this cycle.", "NPCI UPI Autopay", "NPCI mandate execution rules"),
+    Rule("MANDATE_EXECUTION_WINDOW", "frequency", "UPI Autopay executions run in NPCI's non-peak windows — before 10:00, 13:00–17:00, or after 21:30 IST — not whenever the scheduler feels like it.", "NPCI execution windows", "NPCI UPI Autopay execution windows, May 2026"),
+    Rule("PRE_DEBIT_NOTICE_24H", "compliance", "A recurring debit needs a pre-debit notification to the customer at least 24 hours beforehand.", "RBI E-Mandate Framework 2026", "RBI Digital Payments — E-Mandate Framework, 2026"),
     Rule("AFA_THRESHOLD", "compliance", "A recurring debit above the AFA-free ceiling (₹15,000; ₹1,00,000 for mutual funds, insurance and card bills) cannot be retried silently — it needs the customer's authentication.", "RBI E-Mandate Framework 2026", "RBI Digital Payments — E-Mandate Framework, 2026"),
     Rule("MAX_RETRY_3_PER_CYCLE", "frequency", "Max 3 charge attempts per billing cycle on cards, mirroring Razorpay's own T+3 behaviour.", None, "mirrors Razorpay subscription retries; product policy"),
     Rule("NETWORK_RETRY_CAP_30D", "frequency", "Respect the card network's rolling 30-day reattempt ceiling: 15 on Visa, 10 on Mastercard.", "Visa / Mastercard", "Visa excessive-reattempt rule; Mastercard reattempt limits"),
     Rule("SILENT_FIRST", "frequency", "Attempt at least one silent retry before any customer contact — unless the decline is hard and a silent retry cannot succeed.", None, "product policy"),
     Rule("MAX_CONTACTS_2_PER_7D", "frequency", "No more than 2 customer contacts in any rolling 7 days.", None, "product policy"),
+    Rule("VOICE_FREQ_3D_8W", "frequency", "Voice calls are capped harder than messages: at most 3 in a day and 8 in a week to one subscriber.", "TRAI promotional-call guidance", "TRAI frequency caps for commercial calls"),
     Rule("BACKOFF_ON_ISSUER_DOWN", "risk", "For bank, gateway or network-side failures: exponential backoff, zero customer contact.", None, "product policy"),
+    Rule("VOICE_ELIGIBILITY", "risk", "A voice call needs the right number series for its class (140 promotional, 1600 service/transactional), a recording disclosure, text channels already tried, and a value that justifies the cost.", "TRAI auto-dialler / robocall series", "TRAI TCCCPR 2025 memo ¶18, ¶50; product policy"),
+    Rule("MSMED_LEVER_AFTER_STATUTORY_WINDOW", "compliance", "A statutory interest notice may only be sent after the MSMED payment window has lapsed (15 days without a written agreement, 45 with one) and only when the supplier is a registered micro or small enterprise.", "MSMED Act 2006 s.15–16 · IT Act s.43B(h)", "MSMED Act; Finance Act 2023 s.43B(h)"),
     Rule("DISCOUNT_CAP_5PCT", "economics", "Any incentive capped at 5% of order value, with a cumulative batch budget ceiling.", None, "product policy"),
     Rule("STOP_ON_NEGATIVE_UPLIFT", "economics", "If estimated uplift is at or below the threshold, or the contact's expected net value is negative, take no action. Sleeping-dog protection.", None, "product policy"),
     Rule("APPROVAL_ABOVE_THRESHOLD", "economics", "Outreach on a leak above the merchant's approval threshold waits for a human; silent retries proceed.", None, "human-in-the-loop; product policy"),
@@ -109,7 +154,15 @@ class GateOutcome:
 
 
 def preferred_contact_action(ev: LeakEvent) -> str:
-    """The outreach the engine would like to make for this leak, before the gate."""
+    """The outreach the engine would like to make for this leak, before the gate.
+
+    For receivables the ladder decides, because position on the ladder is a
+    function of how long the money has been late — not of the failure code.
+    """
+    if ev.kind == "receivable_overdue":
+        return str((ev.extras.get("ladder") or {}).get("action") or "invoice_reminder")
+    if ev.kind == "checkout_abandonment":
+        return "cart_incentive" if ev.extras.get("offer_incentive") else "cart_reminder"
     if ev.reason_code in ("CARD_EXPIRED", "INVALID_AUTH_DATA"):
         return "card_update_request"
     if ev.reason_code == "INSTRUMENT_BLOCKED":
@@ -186,6 +239,35 @@ def evaluate_gate(
         block_once("STOP_ON_DISPUTE", "A dispute or chargeback is open on this counterparty. No retry, no contact until it closes.")
     else:
         push("STOP_ON_DISPUTE", PASS, "No open dispute on this counterparty.")
+
+    # 4. A live promise outranks everything the agent wants, including a retry.
+    if out.blocked:
+        push("PTP_ACTIVE_HOLD", NA, NOT_EVALUATED)
+    elif ev.promise_hold:
+        ph = ev.promise_hold
+        block_once(
+            "PTP_ACTIVE_HOLD",
+            f"A promise to pay ₹{int(ph.get('amountPaise', 0)) / 100:,.2f} by {str(ph.get('dueAt', ''))[:10]} is live "
+            f"(captured via {ph.get('capturedVia', 'unknown')}). Nothing happens on this counterparty until that date passes.",
+        )
+    else:
+        push("PTP_ACTIVE_HOLD", PASS, "No live promise to pay on this counterparty.")
+
+    # 5. Degradation cohorts: the customer cannot fix a bank outage.
+    if out.blocked:
+        push("DEGRADATION_HOLD", NA, NOT_EVALUATED)
+    elif not ev.degradation_hold:
+        push("DEGRADATION_HOLD", PASS, "Instrument is not in a live degradation cohort.")
+    elif is_contact:
+        dh = ev.degradation_hold
+        block_once(
+            "DEGRADATION_HOLD",
+            f"{dh.get('detail') or 'Degradation cohort live'} (source: {dh.get('source')}, severity {dh.get('severity')}). "
+            "Messaging the customer about an instrument-side outage spends money and blames them for it.",
+        )
+    else:
+        dh = ev.degradation_hold
+        push("DEGRADATION_HOLD", PASS, f"Degradation cohort {dh.get('key')} is live; the retry is backed off rather than the customer contacted.")
 
     # 4. Merchant-side faults are ours to fix, not theirs to hear about.
     if out.blocked:
@@ -264,6 +346,16 @@ def evaluate_gate(
     else:
         push("CONSENT_PURPOSE_MATCH", PASS, "Consent purpose covers promotional outreach" + (f", granted {ev.consent_granted_days_ago} days ago." if ev.consent_granted_days_ago is not None else "."))
 
+    # 10b. Third-party contact, dues only.
+    if out.blocked:
+        push("NO_THIRD_PARTY_CONTACT", NA, NOT_EVALUATED)
+    elif not is_contact or not ev.is_dues:
+        push("NO_THIRD_PARTY_CONTACT", NA, NO_MESSAGE if not is_contact else "Not a dues-type leak.")
+    elif ev.extras.get("contact_is_third_party"):
+        block_once("NO_THIRD_PARTY_CONTACT", "The contact on file belongs to a third party, not the counterparty or a guarantor.")
+    else:
+        push("NO_THIRD_PARTY_CONTACT", PASS, "Contact is the counterparty or a guarantor.")
+
     # 11. NPCI mandate attempt cap.
     if out.blocked:
         push("MANDATE_ATTEMPT_CAP_4", NA, NOT_EVALUATED)
@@ -275,6 +367,33 @@ def evaluate_gate(
         block_once("MANDATE_ATTEMPT_CAP_4", f"{ev.attempts_this_cycle} of {merchant.max_mandate_attempts} mandate executions used this cycle (one execution plus three retries).")
     else:
         push("MANDATE_ATTEMPT_CAP_4", PASS, f"{ev.attempts_this_cycle} of {merchant.max_mandate_attempts} mandate executions used this cycle.")
+
+    # 11b. NPCI execution windows for mandate debits.
+    if out.blocked:
+        push("MANDATE_EXECUTION_WINDOW", NA, NOT_EVALUATED)
+    elif not is_retry or not ev.is_mandate:
+        push("MANDATE_EXECUTION_WINDOW", NA, NO_CHARGE if not is_retry else "Not a UPI Autopay or e-mandate debit.")
+    else:
+        slot = ev.extras.get("scheduled_hour_ist")
+        hour = int(slot) if slot is not None else ev.local_hour_ist
+        if in_mandate_window(hour):
+            push("MANDATE_EXECUTION_WINDOW", PASS, f"Execution slot {hour:02d}:00 IST is inside an NPCI non-peak window ({MANDATE_WINDOW_LABEL}).")
+        else:
+            block_once("MANDATE_EXECUTION_WINDOW", f"Execution slot {hour:02d}:00 IST is in a peak window. NPCI requires autopay debits in {MANDATE_WINDOW_LABEL}.")
+
+    # 11c. Pre-debit notification.
+    if out.blocked:
+        push("PRE_DEBIT_NOTICE_24H", NA, NOT_EVALUATED)
+    elif not is_retry or not ev.is_recurring:
+        push("PRE_DEBIT_NOTICE_24H", NA, NO_CHARGE if not is_retry else "Not a recurring debit.")
+    else:
+        notice_h = ev.extras.get("pre_debit_notice_hours")
+        if notice_h is None:
+            push("PRE_DEBIT_NOTICE_24H", PASS, "Retry is a re-presentment of an already-notified debit; the original pre-debit notice stands.")
+        elif float(notice_h) < 24:
+            block_once("PRE_DEBIT_NOTICE_24H", f"Debit is scheduled {float(notice_h):.0f}h after the pre-debit notice; the RBI framework requires at least 24h.")
+        else:
+            push("PRE_DEBIT_NOTICE_24H", PASS, f"Pre-debit notice goes out {float(notice_h):.0f}h before the debit.")
 
     # 12. AFA ceiling on silent recurring debits.
     if out.blocked:
@@ -334,6 +453,21 @@ def evaluate_gate(
     else:
         push("MAX_CONTACTS_2_PER_7D", PASS, f"{ev.contacts_last_7d} of {merchant.max_contacts_7d} contacts used in the rolling 7-day window.")
 
+    # 16b. Voice frequency, harder than messages.
+    if out.blocked:
+        push("VOICE_FREQ_3D_8W", NA, NOT_EVALUATED)
+    elif intended_action not in VOICE_ACTIONS:
+        push("VOICE_FREQ_3D_8W", NA, "No voice call in this action.")
+    else:
+        today = int(ev.extras.get("voice_calls_today", 0) or 0)
+        week = int(ev.extras.get("voice_calls_7d", 0) or 0)
+        if today >= merchant.max_voice_calls_per_day:
+            block_once("VOICE_FREQ_3D_8W", f"{today} voice calls already made today (cap {merchant.max_voice_calls_per_day}).")
+        elif week >= merchant.max_voice_calls_per_week:
+            block_once("VOICE_FREQ_3D_8W", f"{week} voice calls already made this week (cap {merchant.max_voice_calls_per_week}).")
+        else:
+            push("VOICE_FREQ_3D_8W", PASS, f"{today} of {merchant.max_voice_calls_per_day} today, {week} of {merchant.max_voice_calls_per_week} this week.")
+
     # 17. Issuer-side failures are not the customer's problem.
     if out.blocked:
         push("BACKOFF_ON_ISSUER_DOWN", NA, NOT_EVALUATED)
@@ -343,6 +477,40 @@ def evaluate_gate(
         block_once("BACKOFF_ON_ISSUER_DOWN", "Bank, gateway or network-side failure. Exponential backoff only, zero customer contact.")
     else:
         push("BACKOFF_ON_ISSUER_DOWN", PASS, "Issuer-side failure — backoff schedule applied to the retry.")
+
+    # 17b. Voice eligibility: series, disclosure, ladder position, value floor.
+    if out.blocked:
+        push("VOICE_ELIGIBILITY", NA, NOT_EVALUATED)
+    elif intended_action not in VOICE_ACTIONS:
+        push("VOICE_ELIGIBILITY", NA, "No voice call in this action.")
+    else:
+        needed_series = "140" if msg_class == "promotional" else "1600"
+        series = str(ev.extras.get("caller_series") or merchant.voice_caller_series or "")
+        if ev.amount_paise < merchant.voice_min_value_paise:
+            block_once("VOICE_ELIGIBILITY", f"₹{ev.amount_paise / 100:,.2f} is below the ₹{merchant.voice_min_value_paise / 100:,.0f} floor for a voice call — the call costs more than the recovery is worth.")
+        elif series != needed_series:
+            block_once("VOICE_ELIGIBILITY", f"A {msg_class}-class call must originate from the {needed_series}-series; this merchant is configured with {series or 'no series'}.")
+        elif not merchant.voice_recording_disclosure:
+            block_once("VOICE_ELIGIBILITY", "Call recording disclosure is not configured; a recorded collections call without it is not permissible.")
+        elif int(ev.contacts_last_7d) == 0 and not ev.extras.get("text_channels_exhausted"):
+            block_once("VOICE_ELIGIBILITY", "Text channels have not been tried yet. Voice is the last rung, not the first.")
+        else:
+            push("VOICE_ELIGIBILITY", PASS, f"{msg_class.capitalize()}-class call on the {series}-series, recording disclosed, text channels already tried, value above the floor.")
+
+    # 17c. MSMED statutory lever: only lawful, and only late.
+    if intended_action not in STATUTORY_ACTIONS:
+        push("MSMED_LEVER_AFTER_STATUTORY_WINDOW", NA, "No statutory notice in this action.")
+    elif out.blocked:
+        push("MSMED_LEVER_AFTER_STATUTORY_WINDOW", NA, NOT_EVALUATED)
+    elif not ev.is_mse_supplier:
+        block_once("MSMED_LEVER_AFTER_STATUTORY_WINDOW", "The supplier is not recorded as a registered micro or small enterprise, so the MSMED interest provision does not apply. Claiming it would be a false statement.")
+    else:
+        deadline = int(ev.extras.get("statutory_deadline_days", 45))
+        if ev.days_overdue <= deadline:
+            block_once("MSMED_LEVER_AFTER_STATUTORY_WINDOW", f"{ev.days_overdue} days past due; the statutory window is {deadline} days. The interest provision has not been triggered yet.")
+        else:
+            interest = int(ev.extras.get("statutory_interest_paise", 0))
+            push("MSMED_LEVER_AFTER_STATUTORY_WINDOW", PASS, f"{ev.days_overdue} days past due against a {deadline}-day statutory window; interest of ₹{interest / 100:,.2f} is claimable at three times the RBI bank rate, compounded monthly.")
 
     # 18. Incentive ceiling.
     if not is_incentive:

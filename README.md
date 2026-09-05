@@ -18,6 +18,15 @@ change anything?* Those come apart in exactly the places the money is:
 ## Running it
 
 ```bash
+./scripts/run.sh              # backend + console, http://localhost:3000
+./scripts/run.sh --seed 3     # seed three batches first, so history is not empty
+```
+
+That installs both halves, creates `backend/.env` and `.env.local` if they are
+missing, trains the uplift models on first boot (~30 s, once) and starts the
+console. Or run them separately:
+
+```bash
 npm install
 npm run dev          # http://localhost:3000
 ```
@@ -78,6 +87,10 @@ Expected backend endpoints (`src/lib/api.ts` is typed against them):
 | `GET`  | `/api/merchant` · `/api/policy/rules` | config and the cited rule catalogue |
 | `POST` | `/api/outcomes/sync` · `/api/outcomes/mark` | learning tab, trace outcome marker |
 | `GET`  | `/api/learning/status` · `POST /api/learning/retrain` | learning tab              |
+| `GET`  | `/api/degradation`              | degradation tab                           |
+| `GET`  | `/api/promises` · `POST`        | promise book; capturing a promise          |
+| `GET`  | `/api/voice/status` · `POST /api/voice/call` | call room                     |
+| `POST` | `/webhooks/razorpay`            | signed outcome attribution                |
 
 Every console page asks the backend first and falls back to the bundled synthetic batch,
 served from `/api/sample/*` route handlers so the 800 KB dataset never enters the client
@@ -85,10 +98,21 @@ bundle. The badge on each page says which one answered.
 
 ### Real data
 
-The console's batch runner has a source selector: **Simulator** (seeded, both branches
-known), **Razorpay account** (pulls failed payments and pending/halted subscriptions from
-your account on the test-mode keys in `backend/.env`), or an **uploaded file** — a Razorpay
-payments export as API JSON (`{"items": [...]}`) or the dashboard CSV. Every real payment's
+The console's batch runner has a source selector:
+
+| Source | What it pulls | Mode |
+| ------ | ------------- | ---- |
+| **Simulator** | seeded failed payments with both branches known | synthetic |
+| **Razorpay account** | failed payments and pending/halted subscriptions from your account | real |
+| **Uploaded file** | a Razorpay payments export — API JSON (`{"items": [...]}`) or the dashboard CSV | real |
+| **Receivables** | issued and partially-paid invoices past their due date, from your account | real, with a synthetic invoice book as fallback |
+| **Checkout drop-off** | abandoned carts in the Magic Checkout webhook's shape | synthetic |
+
+Two things are real from your account the moment keys are set, whatever else is: the
+**payment downtime feed** (`GET /v1/payments/downtimes`), which drives the degradation
+holds, and your **invoices**, which drive the receivables ladder. A fresh test account has
+no failed payments — the Razorpay source says so plainly instead of returning an empty
+batch dressed as a result. Every real payment's
 `error_reason` maps onto one of thirteen reason families (`backend/app/taxonomy.py`),
 including three a toy simulator never needs: `CUSTOMER_CANCELLED`, `INSTRUMENT_BLOCKED`
 (never retried on the same instrument) and `MERCHANT_CONFIG` (`error_source = business` —
@@ -101,7 +125,56 @@ Engagement and tenure are proxies estimated from the pulled history and are labe
 such in every trace. Raw contact details never enter the ledger — only a hash.
 
 `backend/merchant.toml` is the onboarding config: budget, thresholds, which channels are
-real, message costs by class, contact windows, MSME status, AFA category.
+real, message costs by class, contact windows, MSME status, AFA category, voice number
+series and the incentive margin.
+
+### The other six leak types
+
+Every kind of revenue at risk is the same object — a `LeakEvent` with a counterparty, an
+amount, a clock and a channel history — so one gate, one value model and one budget serve
+all of them. The **Compare** tab shows the allocation: expected net value per rupee of
+contact, which is what makes a receivable and a failed subscription comparable at all.
+
+- **Degradation** (`/console/degradation`). Razorpay's declared downtimes *plus* an
+  EWMA + CUSUM changepoint detector on the success rate per instrument. Either signal holds
+  the whole cohort: `DEGRADATION_HOLD` blocks customer contact but lets the retry back off,
+  because a customer cannot fix a bank outage and should not be messaged about one. The
+  detector requires a *present* drop, not just accumulated drift — historical drift alone
+  must never hold real payments.
+- **Promises to pay** (`/console/promises`). The strongest stopping rule in the system:
+  while a promise is live, `PTP_ACTIVE_HOLD` blocks everything on that counterparty,
+  including the silent retry. Reminder the day before, broken at three days past, a second
+  break escalated from collections to a risk decision. A promise counts as kept only when
+  Razorpay reports the money — never because the customer said so.
+- **Mandate sequencer.** For UPI Autopay and e-mandate the scarce resource is attempts, not
+  messages: NPCI allows one execution plus three retries. The sequencer picks a slot by
+  P(balance sufficient | day of month) inside an NPCI non-peak window, schedules the
+  24-hour pre-debit notice, and reports what that buys against the fixed T+1 clock.
+- **B2B receivables.** Ageing buckets, a six-rung ladder ending in a virtual account for
+  bank transfer, and the MSMED statutory interest notice — gated on the supplier actually
+  being a registered micro or small enterprise and the window actually having lapsed,
+  because claiming the provision otherwise is a false statement. A dispute stops the
+  ladder cold.
+- **Checkout drop-off.** Two arms: a free reminder or one with a discount. The discount is
+  charged on *every* conversion it touches, including the ones that would have happened
+  anyway, which is why "send the code to everyone" is expensive and invisible in a
+  conversion-rate dashboard. The batch reports margin protected by *not* discounting.
+- **Hinglish voice** (call room on any trace above the value floor). A fixed dialogue state
+  machine — a collections call must not improvise — with rule-based intent classification and
+  conservative date extraction: an unparseable promise is no promise. Speech is Sarvam
+  (`bulbul:v3` TTS, `saaras:v3` STT in code-mixed mode) when `SARVAM_API_KEY` is set;
+  without it the script is produced and every turn says no audio was synthesised. The
+  telephony line and the customer are simulated in every configuration.
+
+### Webhooks
+
+`POST /webhooks/razorpay` attributes outcomes in real time, on the same path as the poll.
+Signature-verified against `RAZORPAY_WEBHOOK_SECRET` with `hmac.compare_digest` before the
+payload is read for meaning, and deduplicated on `x-razorpay-event-id` so a Razorpay retry
+acknowledges without attributing twice. Without a secret the endpoint refuses every
+delivery — a receiver that accepts unsigned payloads "for the demo" accepts them in
+production too. Point a tunnel at it (`cloudflared tunnel --url http://localhost:8000`) and
+set the secret in `backend/.env`.
 
 ### The learning loop
 
@@ -207,6 +280,8 @@ src/
       trace/[eventId]/          full decision chain for one event
       sleeping-dogs/            every no-action decision, and why
       exceptions/               unresolved cases with structured reasons
+      degradation/              live cohorts and what they held
+      promises/                 the promise book and its kept rate
       history/                  every batch on record + the audit chain
       learning/                 arms, measured policy effect, sync and retrain
     api/sample/                 demo-mode fallback endpoints
@@ -231,6 +306,14 @@ backend/
     policy.py     the gate: 21 ordered rules with citations
     outcomes.py   outcome attribution from Razorpay or an operator
     learning.py   measured policy effect + real-data estimator with known propensities
+    degradation.py  downtime feed + EWMA/CUSUM detector, cohort holds
+    promises.py   promise-to-pay state machine
+    receivables.py  invoice ageing, the ladder, MSMED interest
+    invoice_sim.py  synthetic invoice book with payer archetypes
+    checkout.py   abandoned carts and the two-arm incentive decision
+    scheduling.py  mandate retry sequencer (NPCI windows, pre-debit notice)
+    voice.py      Hinglish dialogue machine + Sarvam TTS/STT adapter
+    webhooks.py   signature-verified Razorpay webhook receiver
     sim.py  uplift.py  retrieval.py  diagnosis.py  executor.py
     export_sample.py  regenerate the bundled demo batch from this engine
     seed.py       python -m app.seed — fill history and case memory on a fresh clone

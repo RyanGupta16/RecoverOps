@@ -167,6 +167,8 @@ for (const [name, path] of [
   ['compare', '/console/compare'],
   ['dogs', '/console/sleeping-dogs'],
   ['exceptions', '/console/exceptions'],
+  ['degradation', '/console/degradation'],
+  ['promises', '/console/promises'],
   ['history', '/console/history'],
   ['learning', '/console/learning'],
 ]) {

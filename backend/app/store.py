@@ -176,6 +176,50 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        4,
+        [
+            # Promise-to-pay: the state machine that blocks every other action
+            # on a counterparty while a promise is live.
+            """CREATE TABLE promises (
+                promise_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                counterparty_id TEXT NOT NULL,
+                event_id TEXT,
+                amount_paise INTEGER NOT NULL,
+                due_at TEXT NOT NULL,
+                state TEXT NOT NULL,
+                captured_via TEXT NOT NULL,
+                verbatim TEXT,
+                created_at TEXT NOT NULL,
+                reminded_at TEXT,
+                resolved_at TEXT,
+                verified_by TEXT,
+                amount_paid_paise INTEGER DEFAULT 0,
+                broken_count INTEGER DEFAULT 0
+            )""",
+            "CREATE INDEX idx_promises_counterparty ON promises (counterparty_id, state)",
+            "CREATE INDEX idx_promises_due ON promises (due_at)",
+            # Degradation cohorts observed per batch, from either source.
+            """CREATE TABLE degradations (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT,
+                cohort_key TEXT NOT NULL,
+                source TEXT NOT NULL,
+                method TEXT,
+                instrument_json TEXT,
+                severity TEXT,
+                status TEXT,
+                began_at TEXT,
+                ended_at TEXT,
+                detail TEXT,
+                external_id TEXT,
+                events_held INTEGER DEFAULT 0,
+                observed_at TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_degradations_key ON degradations (cohort_key, observed_at)",
+            "CREATE INDEX idx_degradations_batch ON degradations (batch_id)",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
@@ -258,6 +302,8 @@ class Store:
             "generatedBy": batch.get("generatedBy"),
             "dataMode": batch.get("dataMode", "synthetic"),
             "sourceName": batch.get("sourceName", "simulator"),
+            "kinds": batch.get("kinds") or [],
+            "degradationHeld": sum((batch.get("degradation") or {}).get("eventsHeld", {}).values()) if batch.get("degradation") else 0,
             "agents": {"A": agent("A"), "B": agent("B")},
             "sleepingDogs": len(batch.get("sleepingDogs", [])),
             "exceptions": len(batch.get("exceptions", [])),
@@ -430,6 +476,42 @@ class Store:
             ).fetchone()
         real, pending, resolved, control, explored, synthetic = (int(x or 0) for x in row)
         return {"real": real, "pending": pending, "resolved": resolved, "control": control, "explored": explored, "synthetic": synthetic}
+
+    # ----------------------------------------------------------- degradation
+
+    def save_degradations(self, batch_id: str | None, cohorts: list[dict], held: dict[str, int]) -> None:
+        at = now_iso()
+        with self.transaction() as c:
+            for co in cohorts:
+                c.execute(
+                    """INSERT INTO degradations (batch_id, cohort_key, source, method, instrument_json, severity,
+                                                 status, began_at, ended_at, detail, external_id, events_held, observed_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        batch_id, co["key"], co["source"], co.get("method"), canonical(co.get("instrument") or {}),
+                        co.get("severity"), co.get("status"), co.get("beganAt"), co.get("endedAt"),
+                        co.get("detail"), co.get("externalId"), held.get(co["key"], 0), at,
+                    ),
+                )
+
+    def recent_degradations(self, limit: int = 50) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute(
+                """SELECT cohort_key, source, method, instrument_json, severity, status, began_at, ended_at,
+                          detail, external_id, SUM(events_held) held, MAX(observed_at) last_seen, COUNT(*) sightings
+                   FROM degradations GROUP BY cohort_key, source ORDER BY last_seen DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "key": r["cohort_key"], "source": r["source"], "method": r["method"],
+                "instrument": json.loads(r["instrument_json"] or "{}"), "severity": r["severity"],
+                "status": r["status"], "beganAt": r["began_at"], "endedAt": r["ended_at"],
+                "detail": r["detail"], "externalId": r["external_id"],
+                "eventsHeld": r["held"] or 0, "lastSeen": r["last_seen"], "sightings": r["sightings"],
+            }
+            for r in rows
+        ]
 
     # -------------------------------------------------------------- learning
 

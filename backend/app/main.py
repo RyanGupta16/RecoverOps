@@ -23,6 +23,10 @@ Endpoints match src/lib/api.ts on the frontend exactly:
   POST /api/outcomes/mark              {eventId, recovered, churned?, note?} — operator attribution
   GET  /api/learning/status            arms, resolved rows, measured policy effect, estimator in use
   POST /api/learning/retrain           refit the real-data estimator now
+  GET  /api/degradation                live cohorts from the downtime feed and our detector
+  GET  /api/promises · POST            the promise book, and capturing a promise
+  GET  /api/voice/status · POST /api/voice/call    Hinglish call over a simulated line
+  POST /webhooks/razorpay              signature-verified outcome attribution
 
 Run:  uvicorn app.main:app --port 8000    (from backend/, venv active)
 
@@ -36,7 +40,7 @@ import asyncio
 import contextlib
 import json
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -83,7 +87,7 @@ app.add_middleware(
 
 
 class RunRequest(BaseModel):
-    source: str = Field("simulator", pattern="^(simulator|razorpay|file)$")
+    source: str = Field("simulator", pattern="^(simulator|razorpay|file|receivables|checkout)$")
     seed: int | None = None
     count: int | None = Field(None, ge=10, le=5000)
     fileId: str | None = None
@@ -96,6 +100,19 @@ class MarkRequest(BaseModel):
     recovered: bool
     churned: bool = False
     note: str = Field("", max_length=500)
+
+
+class PromiseRequest(BaseModel):
+    eventId: str
+    amountPaise: int = Field(..., ge=1)
+    dueAt: str
+    capturedVia: str = Field("operator", max_length=40)
+    verbatim: str = Field("", max_length=500)
+
+
+class CallRequest(BaseModel):
+    eventId: str
+    seed: int | None = None
 
 
 def _batch_or_404(batch_id: str) -> dict:
@@ -247,6 +264,68 @@ def outcomes_mark(req: MarkRequest) -> dict:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/webhooks/status")
+def webhooks_status() -> dict:
+    return rt.webhooks.describe()
+
+
+@app.post("/webhooks/razorpay")
+async def razorpay_webhook(
+    request: Request,
+    x_razorpay_signature: str | None = Header(None),
+    x_razorpay_event_id: str | None = Header(None),
+) -> dict:
+    """Signature-verified outcome attribution. Refuses everything without a
+    configured secret rather than trusting an unsigned payload."""
+    body = await request.body()
+    if not rt.webhooks.configured:
+        raise HTTPException(503, "RAZORPAY_WEBHOOK_SECRET is not configured; unsigned webhooks are never accepted.")
+    if not rt.webhooks.verify(body, x_razorpay_signature):
+        rt.store.append_audit(
+            "webhook.rejected",
+            {"reason": "bad or missing signature", "deliveryId": x_razorpay_event_id, "bytes": len(body)},
+            actor="webhook",
+            ref=x_razorpay_event_id,
+        )
+        raise HTTPException(400, "Signature verification failed.")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, "Body is not valid JSON.") from exc
+    return rt.webhooks.handle(payload, x_razorpay_event_id).public()
+
+
+@app.get("/api/degradation")
+def degradation() -> dict:
+    return rt.degradation_view()
+
+
+@app.get("/api/promises")
+def promises() -> dict:
+    return rt.promises_view()
+
+
+@app.post("/api/promises")
+def promise_create(req: PromiseRequest) -> dict:
+    try:
+        return rt.capture_promise(req.eventId, req.amountPaise, req.dueAt, req.capturedVia, req.verbatim)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/api/voice/status")
+def voice_status() -> dict:
+    return rt.voice.describe()
+
+
+@app.post("/api/voice/call")
+def voice_call(req: CallRequest) -> dict:
+    try:
+        return rt.place_call(req.eventId, req.seed)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.get("/api/learning/status")

@@ -1,8 +1,9 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { CallRoom } from '@/components/console/CallRoom';
 import { ConsoleHeading } from '@/components/console/ConsoleHeading';
 import { DecisionTraceView } from '@/components/console/DecisionTraceView';
-import { API_URL } from '@/lib/api';
+import { API_URL, fetchVoiceStatus } from '@/lib/api';
 import { getSampleTrace } from '@/lib/sample.server';
 import type { DataSource, DecisionTrace } from '@/lib/types';
 
@@ -26,9 +27,12 @@ async function loadTrace(
   return sample ? { trace: sample, source: 'sample' } : null;
 }
 
+/** Mirrors merchant.toml's voice.min_value_paise: below this a call costs more than it recovers. */
+const VOICE_FLOOR_PAISE = 200000;
+
 export default async function TracePage({ params }: { params: Promise<{ eventId: string }> }) {
   const { eventId } = await params;
-  const result = await loadTrace(eventId);
+  const [result, voiceStatus] = await Promise.all([loadTrace(eventId), fetchVoiceStatus()]);
   if (!result) notFound();
 
   return (
@@ -55,6 +59,13 @@ export default async function TracePage({ params }: { params: Promise<{ eventId:
       />
 
       <DecisionTraceView trace={result.trace} source={result.source} />
+
+      {/* Voice is the last rung: offered only where the gate would even consider it. */}
+      {result.source === 'live' && (result.trace.leak?.amountPaise ?? 0) >= VOICE_FLOOR_PAISE && (
+        <div className="mt-4">
+          <CallRoom eventId={eventId} status={voiceStatus} />
+        </div>
+      )}
     </>
   );
 }

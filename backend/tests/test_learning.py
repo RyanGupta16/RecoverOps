@@ -10,7 +10,7 @@ import pytest
 from app.learning import MIN_ROWS, RealLearner, measure_policy_effect
 from app.runtime import Runtime
 from app.sim import FEATURE_VERSION, featurize, generate_events
-from app.sources import assign_holdout, normalize_payment
+from app.sources import assign_holdout
 
 
 @pytest.fixture(scope="module")
@@ -111,15 +111,25 @@ def test_manual_mark_attributes_outcome_and_writes_case_memory(rt):
     assert overlay["agentB"]["outcome"] == {"recovered": True, "churned": False}
     assert overlay["outcomeAttribution"]["source"].startswith("manual")
     assert rt.store.get_trace(leak["event_id"])["agentB"]["outcome"] is None
+    # A synthetic leak already knows its outcome; marking one is a mistake, not a correction.
+    synthetic_batch = next(b for b in rt.store.list_batches() if b["dataMode"] == "synthetic")
+    synthetic_event = rt.store.leaks_for_batch(synthetic_batch["batchId"])[0]["event_id"]
     with pytest.raises(ValueError):
-        rt.outcomes.mark(rt.store.list_batches()[-1]["batchId"] and rt.store.leaks_for_batch(rt.store.list_batches()[-1]["batchId"])[0]["event_id"], recovered=True)
+        rt.outcomes.mark(synthetic_event, recovered=True)
+    # An event nobody has seen is a lookup failure, not a silent no-op.
+    with pytest.raises(LookupError):
+        rt.outcomes.mark("evt_does_not_exist", recovered=True)
 
 
 def test_sync_without_keys_ages_out_stale_leaks_only(rt):
+    """With no Razorpay client nothing can be learned from Razorpay, so fresh
+    leaks stay pending rather than being guessed at."""
+    assert rt.outcomes.client is None, "the suite must run without real credentials"
     report = rt.outcomes.sync()
     assert report["live"] is False and report["checked"] >= 1
     assert report["recovered"] == 0 and report["churned"] == 0
     assert report["stale"] == 0  # everything here is fresh
+    assert report["stillPending"] == report["checked"]
 
 
 def test_measure_policy_effect_bootstraps_an_interval():

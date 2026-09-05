@@ -12,7 +12,7 @@ export type MessageClass = 'transactional' | 'service' | 'promotional';
 export type FailureSide = 'customer' | 'issuer' | 'risk' | 'merchant';
 
 /** Where a batch's leaks came from. */
-export type LeakSourceName = 'simulator' | 'razorpay' | 'file';
+export type LeakSourceName = 'simulator' | 'razorpay' | 'file' | 'receivables' | 'checkout';
 
 /** Synthetic batches know both branches; real ones know neither until outcomes arrive. */
 export type DataMode = 'synthetic' | 'real';
@@ -59,6 +59,146 @@ export interface AgentMetrics {
   holdoutEvents?: number;
   /** Agent B decisions flipped at random for exploration (real data only). */
   exploredDecisions?: number;
+}
+
+/** A live degradation cohort — declared by Razorpay or found by our detector. */
+export interface Cohort {
+  key: string;
+  source: 'razorpay' | 'detector';
+  method: string;
+  instrument: Record<string, string>;
+  severity: 'high' | 'medium' | 'low';
+  beganAt: string;
+  endedAt: string | null;
+  status: string;
+  detail: string;
+  externalId: string | null;
+  successRate: number | null;
+  baselineRate: number | null;
+  attempts: number;
+  eventsHeld?: number;
+  lastSeen?: string;
+  sightings?: number;
+}
+
+export interface DegradationView {
+  cohorts: Cohort[];
+  live: number;
+  feedAvailable: boolean;
+  feedError: string | null;
+  sources: string[];
+  eventsHeld?: Record<string, number>;
+  history?: Cohort[];
+  detectorNote?: string;
+}
+
+export type PromiseState =
+  | 'open' | 'reminded' | 'kept' | 'partially_kept' | 'broken'
+  | 'recontacted' | 'second_broken' | 'risk_escalated' | 'cancelled';
+
+export interface PromiseRecord {
+  promiseId: number;
+  counterpartyId: string;
+  eventId: string | null;
+  amountPaise: number;
+  dueAt: string;
+  state: PromiseState;
+  capturedVia: string;
+  verbatim: string;
+  createdAt: string;
+  remindedAt: string | null;
+  resolvedAt: string | null;
+  verifiedBy: string | null;
+  amountPaidPaise: number;
+  brokenCount: number;
+  open: boolean;
+}
+
+export interface PromiseStats {
+  total: number;
+  byState: Record<string, number>;
+  byChannel: Record<string, { kept: number; broken: number; total: number }>;
+  keptRate: number | null;
+  open: number;
+  promisedPaise: number;
+  paidPaise: number;
+  brokenAfterDays: number;
+  recontactWithinHours: number;
+}
+
+export interface PromisesView {
+  stats: PromiseStats;
+  promises: PromiseRecord[];
+}
+
+/** Per-leak-kind allocation of one shared contact budget. */
+export interface KindRow {
+  kind: LeakKind;
+  leaks: number;
+  atRiskPaise: number;
+  contacted: number;
+  costPaise: number;
+  expectedValuePaise: number;
+  escalated: number;
+  heldByDegradation: number;
+  heldByPromise: number;
+  valuePerRupeeSpent: number | null;
+}
+
+export interface LadderRow {
+  ageing: string;
+  invoices: number;
+  amountPaise: number;
+  contacted: number;
+  disputes: number;
+  statutoryInterestPaise: number;
+  actions: Record<string, number>;
+}
+
+export interface CartArmSummary {
+  carts: number;
+  chosePlain: number;
+  choseIncentive: number;
+  marginProtectedPaise: number;
+  note: string;
+}
+
+export interface ScheduleSummary {
+  mandates: number;
+  meanPSufficientLift: number;
+  expectedRecoveryPaise: number;
+  fixedClockRecoveryPaise: number;
+  deltaPaise: number;
+  note: string;
+}
+
+export interface VoiceTurn {
+  speaker: 'agent' | 'customer';
+  text: string;
+  intent: string | null;
+  audioB64: string | null;
+  audioMocked: boolean;
+  latencyMs: number;
+}
+
+export interface VoiceCallResult {
+  eventId: string;
+  outcome: string;
+  state: string;
+  promise: { amountPaise: number; dueAt: string; verbatim: string; confidence: number } | null;
+  audioLive: boolean;
+  note: string;
+  durationSeconds: number;
+  turns: VoiceTurn[];
+  recordedPromise?: PromiseRecord;
+}
+
+export interface VoiceStatus {
+  provider: string;
+  ttsModel: string;
+  sttModel: string;
+  live: boolean;
+  note: string;
 }
 
 export interface CurvePoint {
@@ -162,6 +302,7 @@ export interface ExceptionRecord {
   contactsLast7d: number;
   /** Merchant-side failures go to merchant operations, not customer-facing humans. */
   queue?: 'human' | 'merchant_ops';
+  kind?: LeakKind;
 }
 
 export interface StreamLine {
@@ -194,8 +335,13 @@ export interface BatchResult {
   sourceName?: LeakSourceName;
   sourceMeta?: Record<string, unknown>;
   merchant?: string;
-  /** 'learned' — trained CATE estimator; 'priors' — reason-family priors (real data before the learning loop). */
-  estimatorMode?: 'learned' | 'priors';
+  /** 'learned' — trained on the simulator; 'learned-real' — on real outcomes; 'priors' — reason-family priors. */
+  estimatorMode?: 'learned' | 'learned-real' | 'priors';
+  kinds?: KindRow[];
+  degradation?: DegradationView | null;
+  ladder?: LadderRow[];
+  cartArms?: CartArmSummary | null;
+  schedules?: ScheduleSummary | null;
   honesty: {
     whatIsSynthetic: string;
     whatIsReal: string;
@@ -248,6 +394,7 @@ export interface LeakRow {
   failedAt: string;
   amountPaise: number;
   planName: string;
+  customerName?: string | null;
   method: string;
   issuer: string;
   network: string | null;
@@ -454,6 +601,8 @@ export interface BatchSummary {
   createdAt: string;
   dataMode?: DataMode;
   sourceName?: LeakSourceName;
+  kinds?: KindRow[];
+  degradationHeld?: number;
   agents: { A: AgentSummaryMetrics; B: AgentSummaryMetrics };
   sleepingDogs: number;
   exceptions: number;

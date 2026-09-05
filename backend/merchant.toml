@@ -12,8 +12,10 @@ name = "RecoverOps demo merchant"
 currency = "INR"
 timezone = "Asia/Kolkata"
 # MSMED Act s.15 (15/45-day payment window, 3× bank-rate interest) is a lever
-# only when the *seller* is a registered micro or small enterprise.
-is_registered_mse = false
+# only when the *seller* is a registered micro or small enterprise. Set it to
+# what you actually are: claiming the provision without the registration is a
+# false statement, and the gate refuses the notice either way.
+is_registered_mse = true
 # RBI E-Mandate Framework 2026: recurring debits without AFA are capped at
 # ₹15,000, or ₹1,00,000 for mutual_fund | insurance | credit_card_bill.
 category = "subscription"
@@ -37,6 +39,9 @@ churn_residual_cycles = 3
 # Actions on leaks above this need a human approval before outreach.
 approval_threshold_paise = 1000000
 discount_cap_pct = 5
+# Margin given up per rupee of discount — prices the cart-incentive arm, so a
+# discount to a shopper who would have converted anyway is charged as a loss.
+gross_margin_pct = 45
 
 [thresholds]
 baseline_probability = 0.35
@@ -61,6 +66,8 @@ whatsapp_utility = 15
 whatsapp_marketing = 109
 email = 2
 voice_per_minute = 100
+# Sarvam TTS + STT for one call: ~₹0.30 of speech at ₹30/10k chars and ₹30/hr.
+voice_ai_per_call = 30
 
 [windows]
 # TCCCPR default preference band for promotional communication, IST.
@@ -73,6 +80,18 @@ max_contacts_7d = 2
 max_retries_per_cycle_cards = 3
 # NPCI UPI Autopay: one execution plus three retries per mandate cycle.
 max_mandate_attempts = 4
+# TRAI frequency guidance for commercial calls, applied to voice specifically.
+max_voice_calls_per_day = 3
+max_voice_calls_per_week = 8
+
+[voice]
+# TRAI: promotional auto-dialled calls must originate on the 140-series and
+# service/transactional ones on 1600. Declare the series you actually hold —
+# the gate refuses to place a call whose class this series cannot originate.
+caller_series = "1600"
+recording_disclosure = true
+# Below this, a call costs more than the recovery is worth.
+min_value_paise = 200000
 
 [frequency.network_retry_cap_30d]
 # Visa: ≤15 reattempts in 30 days (US$0.10 each beyond). Mastercard: ≤10 (US$1→2).

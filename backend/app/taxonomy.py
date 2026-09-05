@@ -129,6 +129,18 @@ FAMILIES: dict[str, Family] = {
                 "user_not_eligible", "international_transaction_not_allowed", "pin_not_set",
             ),
         ),
+        # Non-payment leak kinds. They carry no Razorpay error_reason — the leak
+        # is the absence of a payment, not a failed one — but they flow through
+        # the same families machinery so the gate and the value model need no
+        # special cases.
+        Family(
+            "RECEIVABLE_OVERDUE", "Invoice past its due date", "customer", 0, (0.10, 0.45, 0.35, 0.10),
+            retriable=False,
+        ),
+        Family(
+            "CHECKOUT_ABANDONED", "Checkout started and abandoned", "customer", 0, (0.12, 0.46, 0.34, 0.08),
+            retriable=False,
+        ),
         Family(
             "MERCHANT_CONFIG", "Merchant-side configuration error", "merchant", 3, (0.70, 0.05, 0.22, 0.03),
             merchant_side=True,
@@ -229,5 +241,9 @@ def classify(
 
 
 def sim_reasons() -> list[tuple[str, str, str, int, list[float], bool]]:
-    """The generator's view: (code, label, side, weight, prior, ambiguous)."""
+    """The generator's view: (code, label, side, weight, prior, ambiguous).
+
+    Includes the zero-weight non-payment families so the feature vector's
+    one-hot covers every leak kind; the payment-failure generator never draws
+    them because their weight is 0."""
     return [(f.code, f.label, f.side, f.sim_weight, list(f.prior), f.ambiguous) for f in FAMILIES.values()]

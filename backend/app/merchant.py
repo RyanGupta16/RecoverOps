@@ -72,7 +72,18 @@ class MerchantConfig:
     max_contacts_7d: int = 2
     max_retries_per_cycle_cards: int = 3
     max_mandate_attempts: int = 4
+    max_voice_calls_per_day: int = 3
+    max_voice_calls_per_week: int = 8
     network_retry_cap_30d: dict[str, int] = field(default_factory=lambda: {"Visa": 15, "MasterCard": 10, "default": 10})
+
+    # Voice: TRAI requires promotional auto-dialled calls on the 140-series and
+    # service/transactional ones on 1600. A merchant configures the series it
+    # actually holds; the gate refuses a class it cannot legally originate.
+    voice_caller_series: str = "1600"
+    voice_recording_disclosure: bool = True
+    voice_min_value_paise: int = 200000
+    # Margin given up per rupee of discount, for the cart incentive arm.
+    gross_margin_pct: int = 45
 
     source_path: str | None = None
 
@@ -124,8 +135,16 @@ class MerchantConfig:
         cfg.max_contacts_7d = int(f.get("max_contacts_7d", cfg.max_contacts_7d))
         cfg.max_retries_per_cycle_cards = int(f.get("max_retries_per_cycle_cards", cfg.max_retries_per_cycle_cards))
         cfg.max_mandate_attempts = int(f.get("max_mandate_attempts", cfg.max_mandate_attempts))
+        cfg.max_voice_calls_per_day = int(f.get("max_voice_calls_per_day", cfg.max_voice_calls_per_day))
+        cfg.max_voice_calls_per_week = int(f.get("max_voice_calls_per_week", cfg.max_voice_calls_per_week))
         if "network_retry_cap_30d" in f:
             cfg.network_retry_cap_30d = {**cfg.network_retry_cap_30d, **{k: int(v) for k, v in f["network_retry_cap_30d"].items()}}
+
+        v = raw.get("voice", {})
+        cfg.voice_caller_series = str(v.get("caller_series", cfg.voice_caller_series))
+        cfg.voice_recording_disclosure = bool(v.get("recording_disclosure", cfg.voice_recording_disclosure))
+        cfg.voice_min_value_paise = int(v.get("min_value_paise", cfg.voice_min_value_paise))
+        cfg.gross_margin_pct = int(b.get("gross_margin_pct", cfg.gross_margin_pct))
 
         cfg.source_path = str(p)
         return cfg
@@ -141,13 +160,18 @@ class MerchantConfig:
 
     def cost_for(self, action: str, message_class: str | None) -> int:
         """Marginal cost of one execution of `action`, in paise, at the class the gate assigned."""
-        if action in ("silent_retry", "retry_scheduled", "escalate", "no_action"):
+        if action in ("silent_retry", "retry_scheduled", "escalate", "no_action", "virtual_account"):
             return 0
+        if action == "voice_call":
+            # A collections call runs about ninety seconds, plus TTS and STT.
+            return int(self.costs_paise["voice_per_minute"] * 1.5) + self.costs_paise.get("voice_ai_per_call", 0)
+        if action in ("invoice_reminder", "statement_of_account", "msmed_notice"):
+            return self.costs_paise["email"] + self.costs_paise["sms_transactional"]
         if action in ("payment_link_sms", "card_update_request"):
             return self.costs_paise["sms_transactional"]
-        if action == "payment_link_whatsapp":
+        if action in ("payment_link_whatsapp", "cart_reminder"):
             return self.costs_paise["whatsapp_marketing"] if message_class == "promotional" else self.costs_paise["whatsapp_utility"]
-        if action == "incentive_link":
+        if action in ("incentive_link", "cart_incentive"):
             return self.costs_paise["whatsapp_marketing"]
         return self.costs_paise["sms_transactional"]
 
@@ -182,7 +206,15 @@ class MerchantConfig:
                 "maxContacts7d": self.max_contacts_7d,
                 "maxRetriesPerCycleCards": self.max_retries_per_cycle_cards,
                 "maxMandateAttempts": self.max_mandate_attempts,
+                "maxVoiceCallsPerDay": self.max_voice_calls_per_day,
+                "maxVoiceCallsPerWeek": self.max_voice_calls_per_week,
                 "networkRetryCap30d": self.network_retry_cap_30d,
             },
+            "voice": {
+                "callerSeries": self.voice_caller_series,
+                "recordingDisclosure": self.voice_recording_disclosure,
+                "minValuePaise": self.voice_min_value_paise,
+            },
+            "grossMarginPct": self.gross_margin_pct,
             "sourcePath": self.source_path,
         }

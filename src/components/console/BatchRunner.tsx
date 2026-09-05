@@ -30,7 +30,11 @@ const SOURCE_LABEL: Record<LeakSourceName, string> = {
   simulator: 'Simulator',
   razorpay: 'Razorpay account',
   file: 'Uploaded file',
+  receivables: 'Receivables',
+  checkout: 'Checkout drop-off',
 };
+
+const SOURCE_ORDER: LeakSourceName[] = ['simulator', 'razorpay', 'file', 'receivables', 'checkout'];
 
 export function BatchRunner({ script }: { script: StreamLine[] }) {
   const [state, setState] = useState<RunState>('idle');
@@ -267,7 +271,7 @@ export function BatchRunner({ script }: { script: StreamLine[] }) {
               <span className="mr-1 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-mute">
                 Leaks from
               </span>
-              {(['simulator', 'razorpay', 'file'] as LeakSourceName[]).map((name) => {
+              {SOURCE_ORDER.map((name) => {
                 const info = sources.find((s) => s.name === name);
                 const available = info?.available ?? name === 'simulator';
                 const active = leakSource === name;

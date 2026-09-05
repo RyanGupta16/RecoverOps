@@ -98,6 +98,10 @@ class LeakEvent:
     features_are_proxies: bool = False  # real data: engagement/tenure are estimates
     promise_until: str | None = None
     holdout: bool = False
+    # Set by the engine before gating: the live degradation cohort holding this
+    # leak's instrument, and the live promise holding its counterparty.
+    degradation_hold: dict | None = None
+    promise_hold: dict | None = None
 
     # --- synthetic ground truth (None on real data) -------------------------
     segment: str | None = None
@@ -127,6 +131,16 @@ class LeakEvent:
         RBI recovery-agent contact window applies on top of TCCCPR."""
         return self.kind == "receivable_overdue" or bool(self.extras.get("broken_promise"))
 
+    @property
+    def days_overdue(self) -> int:
+        """Days past the due date, for receivables. 0 when not yet due."""
+        return int(self.extras.get("days_overdue", 0) or 0)
+
+    @property
+    def is_mse_supplier(self) -> bool:
+        """Whether the MSMED statutory clock applies to this receivable."""
+        return bool(self.extras.get("mse_supplier", False))
+
     def contact_hash(self) -> str | None:
         if not self.contact:
             return None
@@ -147,6 +161,7 @@ class LeakEvent:
             "failedAt": self.failed_at,
             "amountPaise": self.amount_paise,
             "planName": self.plan_name,
+            "customerName": self.extras.get("customer_name"),
             "method": self.method,
             "issuer": self.issuer,
             "network": self.network,

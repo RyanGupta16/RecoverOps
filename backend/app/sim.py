@@ -94,7 +94,11 @@ PLANS = [
 ]
 METHODS = ["card", "card", "card", "upi_autopay", "upi_autopay", "emandate", "netbanking"]
 METHOD_KINDS = ["card", "upi_autopay", "emandate", "netbanking", "upi", "wallet"]
-ISSUERS = ["HDFC", "ICICI", "SBI", "Axis", "Kotak", "IndusInd", "Yes Bank", "IDFC First"]
+# Razorpay's four-character issuer codes, not display names. The downtime feed
+# reports `instrument.issuer` in exactly this vocabulary, so using anything else
+# means a declared outage on a real issuer never matches a simulated leak.
+ISSUERS = ["HDFC", "ICIC", "SBIN", "UTIB", "KKBK", "INDB", "YESB", "IDFB", "PUNB", "CNRB", "BKID", "CITI"]
+UPI_HANDLES = ["okhdfcbank", "okicici", "oksbi", "ybl", "paytm", "kotak811", "apl"]
 NETWORKS = ["Visa", "Visa", "MasterCard", "RuPay"]
 PSPS = ["google_pay", "phonepe", "paytm", "bhim"]
 
@@ -148,6 +152,9 @@ def _draw_segment(rng: np.random.Generator, prior: list[float], engagement: floa
 
 def generate_events(seed: int, count: int = CONFIG["eventCount"]) -> list[LeakEvent]:
     rng = np.random.default_rng(seed)
+    # Zero-weight families (receivables, carts) are never drawn here — they have
+    # their own generators — but they stay in REASONS so the feature vector's
+    # one-hot covers every leak kind.
     weights = np.array([r[3] for r in REASONS], dtype=float)
     weights /= weights.sum()
     base = datetime.now(timezone.utc) - timedelta(hours=6)
@@ -185,7 +192,7 @@ def generate_events(seed: int, count: int = CONFIG["eventCount"]) -> list[LeakEv
                 customer_initiated=False,
                 has_relationship=True,
                 method=method,
-                issuer="UPI" if method == "upi_autopay" else ISSUERS[int(rng.integers(0, len(ISSUERS)))],
+                issuer=UPI_HANDLES[int(rng.integers(0, len(UPI_HANDLES)))] if method == "upi_autopay" else ISSUERS[int(rng.integers(0, len(ISSUERS)))],
                 network=NETWORKS[int(rng.integers(0, len(NETWORKS)))] if method == "card" else None,
                 psp=PSPS[int(rng.integers(0, len(PSPS)))] if method == "upi_autopay" else None,
                 reason_code=code,
@@ -220,8 +227,10 @@ def true_uplift(ev: LeakEvent) -> float:
     return ev.truth[1] - ev.truth[0]
 
 
-# Bump when the feature vector changes shape; the model cache is keyed on it.
-FEATURE_VERSION = 3
+# Bump when the feature vector changes shape; the model cache is keyed on it, so
+# a stale pickle is a cache miss rather than a model scoring the wrong columns.
+# v4 added the receivable and checkout families to the reason one-hot.
+FEATURE_VERSION = 4
 
 
 def featurize(ev: LeakEvent) -> list[float]:

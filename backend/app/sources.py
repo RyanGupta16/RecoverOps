@@ -72,7 +72,79 @@ class SimulatorSource:
 
         seed = seed if seed is not None else secrets.randbelow(2**31)
         leaks = generate_events(seed, count or CONFIG["eventCount"])
-        return PullResult(leaks, {"seed": seed, "count": len(leaks)})
+        return PullResult(leaks, {"seed": seed, "count": len(leaks), **_summary(leaks)})
+
+
+class CheckoutSource:
+    """Abandoned carts. Synthetic with segment truth, so the two-arm incentive
+    decision can be graded; the same shape a Magic Checkout webhook delivers."""
+
+    name = "checkout"
+
+    def __init__(self, merchant: MerchantConfig) -> None:
+        self.merchant = merchant
+
+    def describe(self) -> dict:
+        return {
+            "name": self.name,
+            "available": True,
+            "dataMode": "synthetic",
+            "note": "Abandoned checkouts with known ground truth, in the shape of Razorpay's Magic Checkout abandoned-cart webhook. Grades the discount decision, which is the expensive one.",
+        }
+
+    def pull(self, seed: int | None = None, count: int | None = None, **_: Any) -> PullResult:
+        import secrets
+
+        from .checkout import generate_carts
+
+        seed = seed if seed is not None else secrets.randbelow(2**31)
+        leaks = generate_carts(seed, count or 300, self.merchant)
+        return PullResult(leaks, {"seed": seed, "count": len(leaks), **_summary(leaks)})
+
+
+class ReceivablesSource:
+    """Overdue invoices from the merchant's own Razorpay account — real
+    receivables where the account has any, with a synthetic invoice book as the
+    fallback so the ladder can be demonstrated on an empty test account."""
+
+    name = "receivables"
+
+    def __init__(self, client: Any | None, merchant: MerchantConfig) -> None:
+        self.client = client
+        self.merchant = merchant
+
+    def describe(self) -> dict:
+        return {
+            "name": self.name,
+            "available": True,
+            "dataMode": "real" if self.client is not None else "synthetic",
+            "note": (
+                "Issued and partially-paid invoices past their due date, pulled from your Razorpay account. Falls back to a synthetic invoice book when the account has none."
+                if self.client
+                else "No Razorpay keys — runs on a synthetic invoice book with payer archetypes and disputes."
+            ),
+        }
+
+    def pull(self, seed: int | None = None, count: int | None = None, limit: int = 500, **_: Any) -> PullResult:
+        from .receivables import InvoiceSource
+
+        if self.client is not None:
+            leaks, meta = InvoiceSource(client=self.client, merchant=self.merchant).pull(limit=limit)
+            if leaks:
+                return PullResult(leaks, {**meta, **_summary(leaks), "dataMode": "real"})
+            # An account with no overdue invoices is not an error; fall through
+            # to the synthetic book so the ladder is still demonstrable, and say so.
+            fallback_note = f"Razorpay account has no overdue invoices ({meta.get('invoicesScanned', 0)} scanned) — using the synthetic invoice book."
+        else:
+            fallback_note = "No Razorpay keys — using the synthetic invoice book."
+
+        import secrets
+
+        from .invoice_sim import generate_invoices
+
+        seed = seed if seed is not None else secrets.randbelow(2**31)
+        leaks = generate_invoices(seed, count or 200, self.merchant)
+        return PullResult(leaks, {"seed": seed, "count": len(leaks), "note": fallback_note, "dataMode": "synthetic", **_summary(leaks)})
 
 
 # ---------------------------------------------------------------- normaliser
@@ -276,6 +348,7 @@ def normalize_payment(
             "cardType": _get(card, "type"),
             "vpaHandle": handle or None,
             "description": _get(p, "description", "Description"),
+            "customer_name": _get(p, "customer_name", "Customer Name", default=None),
         },
     )
     return ev
@@ -448,6 +521,18 @@ class RazorpaySource:
 
         leaks.sort(key=lambda e: e.failed_at)
         leaks = leaks[-limit:]
+        if not leaks:
+            # An account with no failed payments is the normal state of a fresh
+            # test account, not a fault. Say which of the two it is.
+            scanned = len(payments)
+            error = (
+                f"Your Razorpay account has no failed payments in the last {days} days "
+                f"({scanned} payment(s) scanned). Nothing to recover — which is the right answer, not an error. "
+                "Upload a payments export, or run the simulator, receivables or checkout source."
+                if scanned or not errors
+                else f"Could not read payments from Razorpay: {errors[0]}"
+            )
+            return PullResult([], {"error": error, "paymentsScanned": scanned, "errors": errors, "days": days})
         return PullResult(
             leaks,
             {
@@ -458,6 +543,9 @@ class RazorpaySource:
                 "invoicesScanned": len(invoices),
                 "days": days,
                 "errors": errors,
+                # The detector runs on this stream; the runtime strips it before
+                # anything is written to the audit log.
+                "raw_payments": payments,
                 **_summary(leaks),
             },
         )

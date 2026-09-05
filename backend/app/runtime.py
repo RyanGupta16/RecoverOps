@@ -13,20 +13,36 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402  (import order is deliberate: env before layers)
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# RECOVEROPS_NO_DOTENV lets the test suite run identically on a machine that has
+# real API keys and one that does not. Without it a developer's own .env would
+# quietly turn hermetic tests into live-API tests.
+if os.environ.get("RECOVEROPS_NO_DOTENV") != "1":
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+from .degradation import DegradationMonitor  # noqa: E402
 from .diagnosis import Diagnoser  # noqa: E402
 from .engine import run_batch  # noqa: E402
 from .executor import Executor  # noqa: E402
 from .learning import RealLearner  # noqa: E402
 from .merchant import MerchantConfig  # noqa: E402
 from .outcomes import OutcomeTracker  # noqa: E402
+from .promises import PromiseBook  # noqa: E402
 from .retrieval import CaseMemory, Corpus  # noqa: E402
-from .sources import FileSource, LeakSource, RazorpaySource, SimulatorSource, apply_holdout  # noqa: E402
+from .sources import (  # noqa: E402
+    CheckoutSource,
+    FileSource,
+    LeakSource,
+    RazorpaySource,
+    ReceivablesSource,
+    SimulatorSource,
+    apply_holdout,
+)
 from .store import DATA_DIR, Store  # noqa: E402
 from .uplift import UpliftEngine  # noqa: E402
+from .voice import SarvamVoice, run_call  # noqa: E402
+from .webhooks import WebhookReceiver  # noqa: E402
 
 LEGACY_BATCH_DIR = DATA_DIR / "batches"
 AUTO_RETRAIN_EVERY = 50  # newly resolved real outcomes between automatic refits
@@ -44,6 +60,10 @@ class Runtime:
     sources: dict[str, LeakSource]
     outcomes: OutcomeTracker
     learner: RealLearner
+    promises: PromiseBook
+    degradation: DegradationMonitor
+    voice: SarvamVoice
+    webhooks: WebhookReceiver
     _resolved_at_last_fit: int = 0
 
     @classmethod
@@ -57,6 +77,8 @@ class Runtime:
             "simulator": SimulatorSource(),
             "razorpay": RazorpaySource(executor.client, merchant),
             "file": FileSource(),
+            "receivables": ReceivablesSource(executor.client, merchant),
+            "checkout": CheckoutSource(merchant),
         }
         rt = cls(
             store=store,
@@ -69,6 +91,10 @@ class Runtime:
             sources=sources,
             outcomes=OutcomeTracker(store, memory, executor.client),
             learner=RealLearner(store) if store.path != ":memory:" else RealLearner(store, path=Path(os.devnull)),
+            promises=PromiseBook(store),
+            degradation=DegradationMonitor(executor.client),
+            voice=SarvamVoice(),
+            webhooks=WebhookReceiver(store, OutcomeTracker(store, memory, executor.client), PromiseBook(store)),
         )
         rt._resolved_at_last_fit = store.leak_counts()["resolved"]
         return rt
@@ -98,6 +124,14 @@ class Runtime:
         seed = pulled.meta.get("seed", seed)
         apply_holdout(pulled.leaks, self.merchant.holdout_share)
 
+        # Promises age before anything is decided, so a promise that broke
+        # overnight stops holding this batch's leaks.
+        self.promises.tick()
+        promise_holds = {cid: p.public() for cid, p in self.promises.open_map().items()}
+        # Degradation: Razorpay's declared downtimes plus our own detector over
+        # whatever payment stream this pull happened to see.
+        view = self.degradation.view(payments=pulled.meta.get("raw_payments") or None)
+
         self.store.append_audit(
             "batch.started",
             {
@@ -105,6 +139,8 @@ class Runtime:
                 "seed": seed,
                 "leaks": len(pulled.leaks),
                 "holdout": sum(1 for ev in pulled.leaks if ev.holdout),
+                "liveCohorts": view.public()["live"],
+                "openPromises": len(promise_holds),
                 "estimator": self.learner.label if not pulled.leaks[0].is_synthetic else self.uplift.label,
                 "merchant": self.merchant.name,
                 "pull": _audit_safe(pulled.meta),
@@ -123,10 +159,15 @@ class Runtime:
             seed=seed,
             source_meta=_audit_safe(pulled.meta),
             real_learner=self.learner,
+            degradation=view,
+            promise_holds=promise_holds,
         )
         result["batch"]["source"] = batch_source_label
         batch_id = self.store.save_batch(result)
         self.store.save_leaks(batch_id, result["leakRows"])
+        deg = result["batch"].get("degradation") or {}
+        if deg.get("cohorts"):
+            self.store.save_degradations(batch_id, deg["cohorts"], deg.get("eventsHeld", {}))
         rows = [
             ("decision", _decision_audit_payload(trace), "agent:B", event_id)
             for event_id, trace in result["traces"].items()
@@ -153,6 +194,73 @@ class Runtime:
 
     def learning_status(self) -> dict:
         return self.learner.status()
+
+    # ------------------------------------------------------------- promises
+
+    def capture_promise(self, event_id: str, amount_paise: int, due_at: str, captured_via: str, verbatim: str = "") -> dict:
+        leak = self.store.latest_leak(event_id)
+        counterparty = leak["counterparty_id"] if leak else event_id
+        p = self.promises.record(counterparty, amount_paise, due_at, captured_via, verbatim, event_id)
+        return p.public()
+
+    def promises_view(self) -> dict:
+        self.promises.tick()
+        return {"stats": self.promises.stats(), "promises": [p.public() for p in self.promises.all(limit=200)]}
+
+    # ---------------------------------------------------------- degradation
+
+    def degradation_view(self) -> dict:
+        view = self.degradation.view()
+        return {
+            **view.public(),
+            "history": self.store.recent_degradations(limit=40),
+            "detectorNote": (
+                "Two independent signals: Razorpay's declared downtime feed, and a CUSUM changepoint on the success "
+                "rate per instrument computed from the payment stream. Either one holds the cohort; a declared "
+                "downtime outranks the detector on the same key."
+            ),
+        }
+
+    # ---------------------------------------------------------------- voice
+
+    def place_call(self, event_id: str, seed: int | None = None) -> dict:
+        """Run the scripted Hinglish call for one leak over a simulated line.
+        A promise captured on the call is recorded through the same book that
+        holds every other action."""
+        import numpy as np
+
+        trace = self.store.get_trace(event_id)
+        leak = self.store.latest_leak(event_id)
+        if trace is None or leak is None:
+            raise LookupError(f"no leak on record for {event_id}")
+        ev = _leak_to_event(leak, trace)
+        rng = np.random.default_rng(seed if seed is not None else abs(hash(event_id)) % (2**31))
+        result = run_call(ev, self.merchant.name, self.voice, rng)
+        payload = result.public()
+        if result.promise:
+            p = self.capture_promise(
+                event_id,
+                int(result.promise["amountPaise"]),
+                str(result.promise["dueAt"]),
+                "voice",
+                str(result.promise["verbatim"]),
+            )
+            payload["recordedPromise"] = p
+        self.store.append_audit(
+            "voice.call",
+            {
+                "eventId": event_id,
+                "outcome": result.outcome,
+                "audioLive": result.audio_live,
+                "turns": len(result.turns),
+                "durationSeconds": result.duration_s,
+                "promise": result.promise,
+                "note": result.note,
+            },
+            actor="agent:B",
+            ref=event_id,
+        )
+        return payload
 
     def trace_with_outcome(self, event_id: str, batch_id: str | None = None) -> dict | None:
         """The stored trace, with the attributed outcome overlaid when a real
@@ -205,7 +313,31 @@ class Runtime:
 
 def _audit_safe(meta: dict) -> dict:
     """Pull metadata without anything that could identify a customer."""
-    return {k: v for k, v in meta.items() if k not in ("files",)}
+    return {k: v for k, v in meta.items() if k not in ("files", "raw_payments")}
+
+
+def _leak_to_event(leak: dict, trace: dict):
+    """Rebuild enough of a LeakEvent from a stored row to place a call against
+    it. The ledger holds the decision; this only needs what the script says."""
+    from .leaks import LeakEvent
+
+    raw = trace.get("leak") or {}
+    return LeakEvent(
+        event_id=leak["event_id"],
+        kind=leak["kind"],
+        source=leak["source"],
+        customer_id=leak.get("counterparty_id") or "",
+        amount_paise=leak["amount_paise"],
+        plan_name=str(raw.get("planName") or ""),
+        method=leak.get("method") or "card",
+        reason_code=leak["reason_code"],
+        reason_label=str(raw.get("reasonLabel") or leak["reason_code"]),
+        contacts_last_7d=int(raw.get("contactsLast7d") or 0),
+        segment=(trace.get("truth") or {}).get("segment") if trace.get("truth") else None,
+        # Greet a person, not a line item. Sources that know the counterparty's
+        # name put it here; the rest stay neutral rather than guessing one.
+        extras={"customer_name": raw.get("customerName") or "Customer"},
+    )
 
 
 def _decision_audit_payload(trace: dict) -> dict:

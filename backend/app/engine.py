@@ -22,17 +22,33 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+from .checkout import incentive_arm_value
+from .degradation import DegradationView
 from .diagnosis import Diagnoser
 from .executor import Executor
 from .leaks import LeakEvent
 from .merchant import MerchantConfig
 from .policy import ACTION_LABELS, CONTACT_ACTIONS, classify_message, evaluate_gate, preferred_contact_action
 from .retrieval import CaseMemory, Corpus
+from .scheduling import apply_schedule
 from .sim import FEATURE_VERSION, SEGMENTS, featurize
 from .store import now_iso
 from .uplift import UpliftEngine, prior_tau
 
-CANDIDATE_ACTIONS = ["silent_retry", "payment_link_sms", "payment_link_whatsapp", "card_update_request", "incentive_link"]
+# Candidate actions shown in a trace, per leak kind. The gate marks the
+# ineligible ones rather than hiding them, so a trace shows what was considered.
+CANDIDATES_BY_KIND = {
+    "subscription_failure": ["silent_retry", "payment_link_sms", "payment_link_whatsapp", "card_update_request", "incentive_link"],
+    "mandate_failure": ["silent_retry", "payment_link_sms", "payment_link_whatsapp", "card_update_request", "incentive_link"],
+    "receivable_overdue": ["invoice_reminder", "statement_of_account", "payment_link_sms", "virtual_account", "msmed_notice", "voice_call"],
+    "checkout_abandonment": ["cart_reminder", "cart_incentive", "payment_link_whatsapp"],
+    "degradation_cohort": ["silent_retry"],
+}
+CANDIDATE_ACTIONS = CANDIDATES_BY_KIND["subscription_failure"]
+
+# How much harder a discount converts than a plain reminder. A prior, not a
+# measurement — stated in the trace and replaced by real arm data.
+INCENTIVE_LIFT_PRIOR = 1.25
 
 ESCALATE_BLOCK = {
     "ruleId": "ESCALATE_UNRESOLVED",
@@ -47,6 +63,23 @@ class Decision(dict):
     """Per-event, per-agent decision record. Plain dict + attribute sugar."""
 
     __getattr__ = dict.__getitem__
+
+
+def _eligible(ev: LeakEvent, action: str) -> bool:
+    """Whether an action is even applicable to this leak, before the gate rules
+    on whether it is permitted. Kept separate so a trace can show 'not
+    applicable' and 'blocked' as the different things they are."""
+    if action == "incentive_link":
+        return ev.reason_code == "MANDATE_REVOKED"
+    if action == "cart_incentive":
+        return bool(ev.extras.get("offer_incentive"))
+    if action == "msmed_notice":
+        return ev.is_mse_supplier and ev.days_overdue > int(ev.extras.get("statutory_deadline_days", 45))
+    if action == "virtual_account":
+        return ev.counterparty_type == "business"
+    if action == "voice_call":
+        return ev.amount_paise >= 200000
+    return True
 
 
 # ------------------------------------------------------------------ estimates
@@ -134,11 +167,12 @@ def _run_policy(
 
         # Control-arm leaks take the silent path for both agents, so the A/B
         # comparison stays fair and the holdout stays a clean counterfactual.
+        quiet_action = "silent_retry" if ev.retriable else "no_action"
         if ev.holdout:
-            intended = "silent_retry"
+            intended = quiet_action
             propensity = 0.0
         elif budget_left <= 0:
-            intended = "silent_retry"
+            intended = quiet_action
             propensity = 0.0
         else:
             preferred = preferred_contact_action(ev)
@@ -156,21 +190,24 @@ def _run_policy(
             else:
                 propensity = 1.0 if wanted else 0.0
                 do_contact = wanted
-            intended = preferred if do_contact else "silent_retry"
+            intended = preferred if do_contact else quiet_action
         result = evaluate_gate(ev, intended, agent, tau, merchant, net_value_paise=net_value)
         action = intended
 
-        # Blocked outreach falls down the ladder to a silent retry; if that is
-        # blocked too, the case goes to a human rather than disappearing.
-        if result.blocked and intended != "silent_retry":
-            fallback = evaluate_gate(ev, "silent_retry", agent, tau, merchant)
+        # Blocked outreach falls down the ladder to the quiet action; if that is
+        # blocked too, the case goes to a human rather than disappearing. For a
+        # leak with no instrument to charge — an overdue invoice, an abandoned
+        # cart — the quiet action is doing nothing, not a retry that cannot exist.
+        quiet = "silent_retry" if ev.retriable else "no_action"
+        if result.blocked and intended != quiet:
+            fallback = evaluate_gate(ev, quiet, agent, tau, merchant)
             fallback.denied_action, fallback.denied_by = intended, result.blocked_by
             if fallback.blocked:
                 action = "escalate"
                 fallback.gate.append(dict(ESCALATE_BLOCK))
                 fallback.escalated = True
             else:
-                action = "silent_retry"
+                action = quiet
             result = fallback
         elif result.blocked:
             action = "escalate"
@@ -226,7 +263,7 @@ def _realize(events: list[LeakEvent], decisions: dict[str, Decision], merchant: 
         if d["contacted"]:
             m["contactsMade"] += 1
             m["contactCostPaise"] += d["costPaise"]
-        if d["action"] == "silent_retry":
+        if d["action"] in ("silent_retry", "no_action"):
             m["silentRetries"] += 1
         if d["action"] == "escalate":
             m["escalations"] += 1
@@ -375,6 +412,8 @@ def run_batch(
     batch_id: str | None = None,
     source_meta: dict | None = None,
     real_learner=None,
+    degradation: DegradationView | None = None,
+    promise_holds: dict[str, dict] | None = None,
 ) -> dict:
     if not events:
         raise ValueError("run_batch needs at least one leak event")
@@ -390,6 +429,22 @@ def run_batch(
     t0 = time.perf_counter()
     executor.start_batch()
 
+    # Cross-cutting holds are attached before anything is ranked or gated, so
+    # a leak the gate will refuse never wins budget from one it would allow.
+    held_by_cohort: dict[str, int] = {}
+    for ev in events:
+        if degradation is not None:
+            cohort = degradation.holding(ev)
+            if cohort is not None:
+                ev.degradation_hold = cohort.public()
+                held_by_cohort[cohort.key] = held_by_cohort.get(cohort.key, 0) + 1
+        if promise_holds:
+            ev.promise_hold = promise_holds.get(ev.customer_id)
+        # Mandate debits get a scheduled slot before the gate checks the
+        # execution window and the pre-debit notice against it.
+        if ev.is_mandate and ev.kind in ("subscription_failure", "mandate_failure"):
+            apply_schedule(ev, merchant)
+
     estimates, baseline_scores, uplift_hats, churn_taus, estimator_label, estimator_mode = _estimates(events, uplift, synthetic, real_learner)
     # Exploration only on real data: on synthetic leaks both branches are known,
     # so there is nothing to learn from randomising and it would only dilute
@@ -400,7 +455,28 @@ def run_batch(
     # what outreach wins, the churn-uplift term prices what it can break, and
     # the channel cost is the real price of the message at the class the gate
     # will assign it — a service-class WhatsApp is 7× cheaper than a marketing one.
+    # Carts are the one kind where the treatment costs margin rather than
+    # postage, so the arm is chosen before the value is computed.
+    cart_arms: dict[str, dict] = {}
+    for ev in events:
+        if ev.kind != "checkout_abandonment":
+            continue
+        p0_hat, _p1, tau_hat, _ct = estimates[ev.event_id]
+        ev.extras["p_base"] = round(p0_hat, 4)
+        # A discount converts harder than a plain reminder, but only on the
+        # shoppers price was the obstacle for — and we cannot see which those
+        # are without arm data. A flat multiplicative prior is the honest
+        # stand-in; the learning loop replaces it once both arms have outcomes.
+        tau_incentive = tau_hat * INCENTIVE_LIFT_PRIOR
+        arm = incentive_arm_value(ev, tau_hat, tau_incentive, merchant)
+        cart_arms[ev.event_id] = arm
+        ev.extras["offer_incentive"] = arm["arm"] == "cart_incentive"
+        ev.extras["arm_choice"] = arm
+
     def contact_value(ev: LeakEvent) -> float:
+        if ev.kind == "checkout_abandonment":
+            arm = cart_arms[ev.event_id]
+            return float(max(arm["plainValuePaise"], arm["incentiveValuePaise"]))
         action = preferred_contact_action(ev)
         msg_class, _ = classify_message(ev, action)
         return (
@@ -425,18 +501,26 @@ def run_batch(
         p0_hat, p1_hat, tau_hat, churn_tau_hat = estimates[ev.event_id]
         executions[ev.event_id] = executor.execute(ev, db["action"])
         per_action = []
-        for action in CANDIDATE_ACTIONS:
+        arm = cart_arms.get(ev.event_id)
+        for action in CANDIDATES_BY_KIND.get(ev.kind, CANDIDATE_ACTIONS):
             is_contact = action != "silent_retry"
             msg_class, _ = classify_message(ev, action)
             est_uplift = tau_hat if is_contact else max(0.0, p0_hat * 0.22)
-            value = round(values[ev.event_id]) if is_contact else round(est_uplift * ev.amount_paise)
+            if arm and action == "cart_reminder":
+                value = arm["plainValuePaise"]
+            elif arm and action == "cart_incentive":
+                value = arm["incentiveValuePaise"]
+            elif is_contact:
+                value = round(values[ev.event_id])
+            else:
+                value = round(est_uplift * ev.amount_paise)
             per_action.append(
                 {
                     "action": action,
                     "label": ACTION_LABELS[action],
                     "estimatedUplift": round(est_uplift, 4),
                     "expectedValuePaise": value,
-                    "eligible": not (action == "incentive_link" and ev.reason_code != "MANDATE_REVOKED"),
+                    "eligible": _eligible(ev, action),
                     "messageClass": msg_class,
                     "costPaise": merchant.cost_for(action, msg_class),
                 }
@@ -601,6 +685,7 @@ def run_batch(
                 "attemptsThisCycle": ev.attempts_this_cycle,
                 "contactsLast7d": ev.contacts_last_7d,
                 "queue": "merchant_ops" if ev.merchant_side else "human",
+                "kind": ev.kind,
             }
         )
     exceptions.sort(key=lambda r: -r["amountPaise"])
@@ -702,6 +787,11 @@ def run_batch(
         "sourceMeta": source_meta or {},
         "merchant": merchant.name,
         "estimatorMode": estimator_mode,
+        "kinds": _kind_breakdown(events, dec_b, values),
+        "degradation": (degradation.public() | {"eventsHeld": held_by_cohort} if degradation is not None else None),
+        "ladder": _ladder_breakdown(events, dec_b),
+        "cartArms": _cart_arm_breakdown(events, dec_b, cart_arms),
+        "schedules": _schedule_breakdown(events),
         "honesty": honesty,
         "assumptions": [
             {"key": "contactBudget", "value": merchant.contact_budget_per_batch, "note": "Outreach budget for the batch. Both agents get the same one; only the ranking objective differs."},
@@ -746,6 +836,103 @@ def run_batch(
         "streamScript": stream,
     }
     return {"batch": batch, "traces": traces, "leakRows": leak_rows}
+
+
+def _kind_breakdown(events: list[LeakEvent], decisions: dict[str, Decision], values: dict[str, float]) -> list[dict]:
+    """One budget, several leak types: where a rupee of contact went and what
+    it was expected to buy. This is the cross-leak P&L in miniature."""
+    rows: dict[str, dict] = {}
+    for ev in events:
+        d = decisions[ev.event_id]
+        r = rows.setdefault(
+            ev.kind,
+            {"kind": ev.kind, "leaks": 0, "atRiskPaise": 0, "contacted": 0, "costPaise": 0,
+             "expectedValuePaise": 0, "escalated": 0, "heldByDegradation": 0, "heldByPromise": 0},
+        )
+        r["leaks"] += 1
+        r["atRiskPaise"] += ev.amount_paise
+        if d["contacted"]:
+            r["contacted"] += 1
+            r["costPaise"] += d["costPaise"]
+            r["expectedValuePaise"] += int(values.get(ev.event_id, 0))
+        if d["action"] == "escalate":
+            r["escalated"] += 1
+        if ev.degradation_hold:
+            r["heldByDegradation"] += 1
+        if ev.promise_hold:
+            r["heldByPromise"] += 1
+    for r in rows.values():
+        r["valuePerRupeeSpent"] = round(r["expectedValuePaise"] / r["costPaise"], 2) if r["costPaise"] else None
+    return sorted(rows.values(), key=lambda r: -r["atRiskPaise"])
+
+
+def _ladder_breakdown(events: list[LeakEvent], decisions: dict[str, Decision]) -> list[dict]:
+    rows: dict[str, dict] = {}
+    for ev in events:
+        if ev.kind != "receivable_overdue":
+            continue
+        bucket = str(ev.extras.get("ageing", "0-15"))
+        r = rows.setdefault(bucket, {"ageing": bucket, "invoices": 0, "amountPaise": 0, "contacted": 0,
+                                     "disputes": 0, "statutoryInterestPaise": 0, "actions": {}})
+        r["invoices"] += 1
+        r["amountPaise"] += ev.amount_paise
+        r["statutoryInterestPaise"] += int(ev.extras.get("statutory_interest_paise", 0))
+        if ev.dispute_open:
+            r["disputes"] += 1
+        d = decisions[ev.event_id]
+        if d["contacted"]:
+            r["contacted"] += 1
+        r["actions"][d["action"]] = r["actions"].get(d["action"], 0) + 1
+    order = {"0-15": 0, "16-45": 1, "46-90": 2, "90+": 3}
+    return sorted(rows.values(), key=lambda r: order.get(r["ageing"], 9))
+
+
+def _cart_arm_breakdown(events: list[LeakEvent], decisions: dict[str, Decision], arms: dict[str, dict]) -> dict | None:
+    carts = [ev for ev in events if ev.kind == "checkout_abandonment"]
+    if not carts:
+        return None
+    chose_plain = chose_incentive = 0
+    margin_protected = 0
+    for ev in carts:
+        arm = arms.get(ev.event_id)
+        if not arm:
+            continue
+        if arm["arm"] == "cart_incentive":
+            chose_incentive += 1
+        else:
+            chose_plain += 1
+            # The discount not given to a shopper the free arm already wins.
+            margin_protected += max(0, arm["marginGivenUpPaise"])
+    return {
+        "carts": len(carts),
+        "chosePlain": chose_plain,
+        "choseIncentive": chose_incentive,
+        "marginProtectedPaise": margin_protected,
+        "note": (
+            "Margin protected is the discount NOT given to shoppers the free reminder already converts. "
+            "A conversion-rate dashboard cannot see this number, which is why discounts spread."
+        ),
+    }
+
+
+def _schedule_breakdown(events: list[LeakEvent]) -> dict | None:
+    scheduled = [ev for ev in events if ev.extras.get("schedule")]
+    if not scheduled:
+        return None
+    lift = sum(float(ev.extras["schedule"]["pSufficientLift"]) for ev in scheduled) / len(scheduled)
+    chosen = sum(int(ev.extras["schedule"]["expectedRecoveryPaise"]) for ev in scheduled)
+    fixed = sum(int(ev.extras["schedule"]["fixedClockRecoveryPaise"]) for ev in scheduled)
+    return {
+        "mandates": len(scheduled),
+        "meanPSufficientLift": round(lift, 4),
+        "expectedRecoveryPaise": chosen,
+        "fixedClockRecoveryPaise": fixed,
+        "deltaPaise": chosen - fixed,
+        "note": (
+            "Against Razorpay's fixed T+1/T+2/T+3 clock, on the same number of attempts. "
+            "P(balance sufficient) by day of month is a documented prior, not a measurement — the learning loop replaces it."
+        ),
+    }
 
 
 def _honesty(synthetic: bool, seed: int, estimator_label: str, source_name: str, n: int) -> dict:

@@ -1,7 +1,7 @@
 {
   "train_n": 100000,
   "holdout_n": 20000,
-  "feature_version": 3,
+  "feature_version": 4,
   "estimators": {
     "t_learner": {
       "pehe": 0.1737,

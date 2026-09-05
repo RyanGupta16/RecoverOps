@@ -7,12 +7,17 @@ import type {
   ExceptionRecord,
   FileIngestMeta,
   LeakSourceInfo,
+  DegradationView,
   LearningRun,
   LearningStatus,
+  PromiseRecord,
+  PromisesView,
   RunBatchOptions,
   SleepingDogRecord,
   Sourced,
   SyncReport,
+  VoiceCallResult,
+  VoiceStatus,
 } from './types';
 
 /**
@@ -137,6 +142,18 @@ export function fetchLearningStatus(): Promise<LearningStatus | null> {
   return backend<LearningStatus>('/api/learning/status');
 }
 
+export function fetchDegradation(): Promise<DegradationView | null> {
+  return backend<DegradationView>('/api/degradation');
+}
+
+export function fetchPromises(): Promise<PromisesView | null> {
+  return backend<PromisesView>('/api/promises');
+}
+
+export function fetchVoiceStatus(): Promise<VoiceStatus | null> {
+  return backend<VoiceStatus>('/api/voice/status');
+}
+
 async function postJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: 'POST',
@@ -163,6 +180,22 @@ export function markOutcome(eventId: string, recovered: boolean, churned = false
 
 export function retrainLearner(): Promise<LearningRun> {
   return postJson<LearningRun>('/api/learning/retrain');
+}
+
+/** Records a promise to pay. It immediately holds every other action on that counterparty. */
+export function recordPromise(
+  eventId: string,
+  amountPaise: number,
+  dueAt: string,
+  capturedVia = 'operator',
+  verbatim = '',
+): Promise<PromiseRecord> {
+  return postJson<PromiseRecord>('/api/promises', { eventId, amountPaise, dueAt, capturedVia, verbatim });
+}
+
+/** Runs the scripted Hinglish call over a simulated line. */
+export function placeVoiceCall(eventId: string, seed?: number): Promise<VoiceCallResult> {
+  return postJson<VoiceCallResult>('/api/voice/call', { eventId, seed });
 }
 
 /** Uploads a Razorpay payments export; the backend answers with what it found in it. */

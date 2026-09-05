@@ -5,7 +5,7 @@ import { ComparisonChartLazy } from '@/components/marketing/ComparisonChartLazy'
 import { DemoModeBadge } from '@/components/ui/primitives';
 import { loadBatch } from '@/lib/batch.server';
 import { percent, rupees } from '@/lib/format';
-import type { AgentMetrics } from '@/lib/types';
+import type { AgentMetrics, BatchResult } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -225,7 +225,141 @@ export default async function ComparePage({
           </TerminalPanel>
         )}
       </div>
+
+      {(batch.kinds?.length ?? 0) > 1 || batch.ladder?.length || batch.cartArms || batch.schedules ? (
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          {(batch.kinds?.length ?? 0) > 0 && (
+            <TerminalPanel title="One budget, several leaks" meta="where a rupee of contact went">
+              <KindSpend batch={batch} />
+              <p className="mt-3 border-t border-hairline pt-3 text-[11.5px] leading-relaxed text-ink-mute">
+                Every leak type competes for the same contact budget, ranked by expected net value per rupee
+                spent. That number is what makes a receivable and a failed subscription comparable at all.
+              </p>
+            </TerminalPanel>
+          )}
+          <div className="flex flex-col gap-4">
+            {batch.schedules && (
+              <TerminalPanel title="Mandate sequencer" meta={`${batch.schedules.mandates} mandate debits`}>
+                <div className="grid grid-cols-3 gap-3">
+                  <Stat label="P(balance) lift" value={`${batch.schedules.meanPSufficientLift >= 0 ? '+' : ''}${percent(batch.schedules.meanPSufficientLift)}`} tone="amber" />
+                  <Stat label="Chosen slots" value={rupees(batch.schedules.expectedRecoveryPaise)} />
+                  <Stat label="Fixed T+1 clock" value={rupees(batch.schedules.fixedClockRecoveryPaise)} tone="mute" />
+                </div>
+                <p className="mt-3 border-t border-hairline pt-3 text-[11.5px] leading-relaxed text-ink-mute">
+                  {batch.schedules.note}
+                </p>
+              </TerminalPanel>
+            )}
+            {batch.cartArms && (
+              <TerminalPanel title="Cart arms" meta={`${batch.cartArms.carts} abandoned carts`}>
+                <div className="grid grid-cols-3 gap-3">
+                  <Stat label="Free reminder" value={String(batch.cartArms.chosePlain)} />
+                  <Stat label="With incentive" value={String(batch.cartArms.choseIncentive)} tone="amber" />
+                  <Stat label="Margin protected" value={rupees(batch.cartArms.marginProtectedPaise)} tone="amber" />
+                </div>
+                <p className="mt-3 border-t border-hairline pt-3 text-[11.5px] leading-relaxed text-ink-mute">
+                  {batch.cartArms.note}
+                </p>
+              </TerminalPanel>
+            )}
+            {(batch.ladder?.length ?? 0) > 0 && (
+              <TerminalPanel title="Receivables ladder" meta="by ageing bucket">
+                <LadderTable batch={batch} />
+                <p className="mt-3 border-t border-hairline pt-3 text-[11.5px] leading-relaxed text-ink-mute">
+                  Statutory interest is claimable only past the MSMED window and only from a registered micro
+                  or small supplier; the gate refuses the notice otherwise, because claiming it without the
+                  registration is a false statement.
+                </p>
+              </TerminalPanel>
+            )}
+          </div>
+        </div>
+      ) : null}
     </>
+  );
+}
+
+function Stat({ label, value, tone = 'ink' }: { label: string; value: string; tone?: 'ink' | 'amber' | 'mute' }) {
+  const cls = { ink: 'text-ink', amber: 'text-amber', mute: 'text-ink-mute' }[tone];
+  return (
+    <div>
+      <p className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-ink-mute">{label}</p>
+      <p className={`mt-1 font-mono text-[17px] tabular-nums ${cls}`}>{value}</p>
+    </div>
+  );
+}
+
+function KindSpend({ batch }: { batch: BatchResult }) {
+  const rows = batch.kinds ?? [];
+  return (
+    <div className="overflow-auto hide-scrollbar">
+      <table className="w-full border-collapse text-left font-mono text-[11.5px]">
+        <thead>
+          <tr className="border-b border-hairline-hi text-[9.5px] uppercase tracking-[0.14em] text-ink-mute">
+            <th className="px-2.5 py-2 font-normal">Leak type</th>
+            <th className="px-2.5 py-2 text-right font-normal">Leaks</th>
+            <th className="px-2.5 py-2 text-right font-normal">At risk</th>
+            <th className="px-2.5 py-2 text-right font-normal">Contacted</th>
+            <th className="px-2.5 py-2 text-right font-normal">Spend</th>
+            <th className="px-2.5 py-2 text-right font-normal">Value / ₹</th>
+            <th className="px-2.5 py-2 text-right font-normal">Held</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.kind} className="border-b border-hairline/60">
+              <td className="px-2.5 py-2 text-brass">{r.kind.replace(/_/g, ' ')}</td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-ink-dim">{r.leaks}</td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-ink-dim">{rupees(r.atRiskPaise)}</td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-amber">{r.contacted}</td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-ink-dim">{rupees(r.costPaise)}</td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-ink">
+                {r.valuePerRupeeSpent === null ? '—' : `₹${r.valuePerRupeeSpent.toLocaleString('en-IN')}`}
+              </td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-ink-mute">
+                {r.heldByDegradation + r.heldByPromise || '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LadderTable({ batch }: { batch: BatchResult }) {
+  const rows = batch.ladder ?? [];
+  return (
+    <div className="overflow-auto hide-scrollbar">
+      <table className="w-full border-collapse text-left font-mono text-[11.5px]">
+        <thead>
+          <tr className="border-b border-hairline-hi text-[9.5px] uppercase tracking-[0.14em] text-ink-mute">
+            <th className="px-2.5 py-2 font-normal">Ageing</th>
+            <th className="px-2.5 py-2 text-right font-normal">Invoices</th>
+            <th className="px-2.5 py-2 text-right font-normal">Amount</th>
+            <th className="px-2.5 py-2 text-right font-normal">Chased</th>
+            <th className="px-2.5 py-2 text-right font-normal">Disputes</th>
+            <th className="px-2.5 py-2 text-right font-normal">Interest</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.ageing} className="border-b border-hairline/60">
+              <td className="px-2.5 py-2 text-brass">{r.ageing} days</td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-ink-dim">{r.invoices}</td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-ink-dim">{rupees(r.amountPaise)}</td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-amber">{r.contacted}</td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-[var(--color-verdict-block)]">
+                {r.disputes || '—'}
+              </td>
+              <td className="px-2.5 py-2 text-right tabular-nums text-ink">
+                {r.statutoryInterestPaise > 0 ? rupees(r.statutoryInterestPaise) : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

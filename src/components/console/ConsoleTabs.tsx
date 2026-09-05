@@ -8,6 +8,8 @@ const TABS = [
   { href: '/console/compare', label: 'Compare' },
   { href: '/console/sleeping-dogs', label: 'Sleeping dogs' },
   { href: '/console/exceptions', label: 'Exceptions' },
+  { href: '/console/degradation', label: 'Degradation' },
+  { href: '/console/promises', label: 'Promises' },
   { href: '/console/history', label: 'History' },
   { href: '/console/learning', label: 'Learning' },
 ];
