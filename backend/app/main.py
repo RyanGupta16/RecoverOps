@@ -19,13 +19,21 @@ Endpoints match src/lib/api.ts on the frontend exactly:
   GET  /api/exceptions                 latest batch's escalations
   GET  /api/audit?limit=&kind=&ref=    audit log tail
   GET  /api/audit/verify               walk the hash chain, report the first break
+  POST /api/outcomes/sync              poll Razorpay for pending real leaks, attribute outcomes
+  POST /api/outcomes/mark              {eventId, recovered, churned?, note?} — operator attribution
+  GET  /api/learning/status            arms, resolved rows, measured policy effect, estimator in use
+  POST /api/learning/retrain           refit the real-data estimator now
 
 Run:  uvicorn app.main:app --port 8000    (from backend/, venv active)
+
+With Razorpay keys configured a background task polls for outcomes every ten
+minutes and refits the real-data estimator every fifty newly resolved rows.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -41,7 +49,31 @@ rt = Runtime.build()
 rt.import_legacy_batch()
 rt.ensure_first_batch()
 
-app = FastAPI(title="RecoverOps backend")
+SYNC_INTERVAL_S = 600
+
+
+async def _outcome_scheduler() -> None:
+    while True:
+        await asyncio.sleep(SYNC_INTERVAL_S)
+        try:
+            await asyncio.to_thread(rt.sync_outcomes)
+        except Exception as exc:  # noqa: BLE001 — the scheduler must outlive a bad poll
+            rt.store.append_audit("outcomes.sync_failed", {"error": f"{type(exc).__name__}: {exc}"}, actor="scheduler")
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_: FastAPI):
+    task = asyncio.create_task(_outcome_scheduler()) if rt.executor.client is not None else None
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+app = FastAPI(title="RecoverOps backend", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3100"],
@@ -57,6 +89,13 @@ class RunRequest(BaseModel):
     fileId: str | None = None
     days: int | None = Field(None, ge=1, le=365)
     limit: int | None = Field(None, ge=1, le=5000)
+
+
+class MarkRequest(BaseModel):
+    eventId: str
+    recovered: bool
+    churned: bool = False
+    note: str = Field("", max_length=500)
 
 
 def _batch_or_404(batch_id: str) -> dict:
@@ -87,7 +126,9 @@ def health() -> dict:
             "schemaVersion": rt.store.schema_version,
             "batches": rt.store.count_batches(),
             "auditRows": rt.store.audit_count(),
+            "leaks": rt.store.leak_counts(),
         },
+        "learning": {"estimatorMode": "learned-real" if rt.learner.ready else "priors", "estimator": rt.learner.label},
     }
 
 
@@ -187,10 +228,35 @@ async def batch_stream(batch_id: str) -> StreamingResponse:
 
 @app.get("/api/events/{event_id}/trace")
 def event_trace(event_id: str, batch_id: str | None = None) -> dict:
-    trace = rt.store.get_trace(event_id, batch_id)
+    trace = rt.trace_with_outcome(event_id, batch_id)
     if trace is None:
         raise HTTPException(404, f"No trace for event {event_id}")
     return trace
+
+
+@app.post("/api/outcomes/sync")
+def outcomes_sync() -> dict:
+    return rt.sync_outcomes()
+
+
+@app.post("/api/outcomes/mark")
+def outcomes_mark(req: MarkRequest) -> dict:
+    try:
+        return rt.outcomes.mark(req.eventId, recovered=req.recovered, churned=req.churned, note=req.note)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/learning/status")
+def learning_status() -> dict:
+    return rt.learning_status()
+
+
+@app.post("/api/learning/retrain")
+def learning_retrain() -> dict:
+    return rt.retrain(trigger="manual")
 
 
 @app.get("/api/sleeping-dogs")

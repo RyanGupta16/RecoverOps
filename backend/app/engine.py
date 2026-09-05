@@ -28,7 +28,8 @@ from .leaks import LeakEvent
 from .merchant import MerchantConfig
 from .policy import ACTION_LABELS, CONTACT_ACTIONS, classify_message, evaluate_gate, preferred_contact_action
 from .retrieval import CaseMemory, Corpus
-from .sim import SEGMENTS, featurize
+from .sim import FEATURE_VERSION, SEGMENTS, featurize
+from .store import now_iso
 from .uplift import UpliftEngine, prior_tau
 
 CANDIDATE_ACTIONS = ["silent_retry", "payment_link_sms", "payment_link_whatsapp", "card_update_request", "incentive_link"]
@@ -51,8 +52,20 @@ class Decision(dict):
 # ------------------------------------------------------------------ estimates
 
 
-def _estimates(events: list[LeakEvent], uplift: UpliftEngine, synthetic: bool) -> tuple[dict, dict, dict, dict, str, str]:
+def _estimates(events: list[LeakEvent], uplift: UpliftEngine, synthetic: bool, real_learner=None) -> tuple[dict, dict, dict, dict, str, str]:
     """(estimates, baseline_scores, uplift_hats, churn_taus, estimator_label, estimator_mode)."""
+    if not synthetic and real_learner is not None and real_learner.ready:
+        # Real rows with real outcomes, fitted with known propensities: the only
+        # model allowed to rank real customers.
+        ests = dict(zip((e.event_id for e in events), real_learner.estimate_batch(events)))
+        return (
+            ests,
+            {eid: est[1] for eid, est in ests.items()},
+            {eid: est[2] for eid, est in ests.items()},
+            {eid: est[3] for eid, est in ests.items()},
+            real_learner.label,
+            "learned-real",
+        )
     if synthetic:
         X = np.array([featurize(e) for e in events])
         baseline_arr = uplift.learners.t_mu1.predict_proba(X)[:, 1]
@@ -98,21 +111,52 @@ def _run_policy(
     wants_contact,
     merchant: MerchantConfig,
     net_values: dict[str, float] | None = None,
+    explore_rng: np.random.Generator | None = None,
 ) -> dict[str, Decision]:
+    """Rank, decide, gate. With ``explore_rng`` (Agent B on real data) a share
+    ε of contact decisions is flipped at random inside the treatment arm, and
+    every contactable leak records its propensity of contact — 1−ε where the
+    policy wanted to contact, ε where it did not, 0 where the gate or the
+    budget made contact impossible. Known propensities are what let the
+    learning loop fit uplift on real outcomes without confounding."""
     ordered = sorted(events, key=lambda e: -scores[e.event_id])
     budget_left = merchant.contact_budget_per_batch
+    eps = merchant.exploration_share if explore_rng is not None else 0.0
     decisions: dict[str, Decision] = {}
 
     for ev in ordered:
         score = scores[ev.event_id]
         tau = uplift_hats[ev.event_id]
         net_value = net_values.get(ev.event_id) if (net_values is not None and agent == "B") else None
+        wanted = bool(wants_contact(ev, score)) and not ev.holdout
+        explored = False
+        propensity: float | None = None
+
         # Control-arm leaks take the silent path for both agents, so the A/B
         # comparison stays fair and the holdout stays a clean counterfactual.
         if ev.holdout:
             intended = "silent_retry"
+            propensity = 0.0
+        elif budget_left <= 0:
+            intended = "silent_retry"
+            propensity = 0.0
         else:
-            intended = preferred_contact_action(ev) if (wants_contact(ev, score) and budget_left > 0) else "silent_retry"
+            preferred = preferred_contact_action(ev)
+            if eps > 0:
+                # Is contact even possible for this leak? The gate is pure, so
+                # ask it once; a deterministic block means propensity 0.
+                allowed = not evaluate_gate(ev, preferred, agent, tau, merchant, net_value_paise=None).blocked
+                if not allowed:
+                    propensity = 0.0
+                    do_contact = False
+                else:
+                    propensity = (1.0 - eps) if wanted else eps
+                    explored = bool(explore_rng.random() < eps)
+                    do_contact = wanted != explored
+            else:
+                propensity = 1.0 if wanted else 0.0
+                do_contact = wanted
+            intended = preferred if do_contact else "silent_retry"
         result = evaluate_gate(ev, intended, agent, tau, merchant, net_value_paise=net_value)
         action = intended
 
@@ -139,6 +183,10 @@ def _run_policy(
         contacted = action in CONTACT_ACTIONS
         if contacted:
             budget_left -= 1
+        elif propensity not in (None, 0.0) and intended in CONTACT_ACTIONS:
+            # Contact was attempted and the gate stopped it on the intended
+            # action's specific terms: no chance of contact for this leak.
+            propensity = 0.0
         decisions[ev.event_id] = Decision(
             action=action,
             contacted=contacted,
@@ -149,6 +197,9 @@ def _run_policy(
             deniedAction=result.denied_action,
             deniedBy=result.denied_by,
             costPaise=merchant.cost_for(action, result.message_class),
+            wanted=wanted,
+            explored=explored,
+            propensity=propensity,
             outcome=None,
         )
     return decisions
@@ -162,7 +213,7 @@ def _realize(events: list[LeakEvent], decisions: dict[str, Decision], merchant: 
         (
             "contactsMade silentRetries escalations recoveredCount recoveredPaise sleepingDogsTouched "
             "wastedContacts outreachDrivenRecoveries outreachCausedCancellations outreachCausedChurnLossPaise "
-            "churnedSubscriptions contactCostPaise outcomesPending holdoutEvents"
+            "churnedSubscriptions contactCostPaise outcomesPending holdoutEvents exploredDecisions"
         ).split(),
         0,
     )
@@ -170,6 +221,8 @@ def _realize(events: list[LeakEvent], decisions: dict[str, Decision], merchant: 
         d = decisions[ev.event_id]
         if ev.holdout:
             m["holdoutEvents"] += 1
+        if d.get("explored"):
+            m["exploredDecisions"] += 1
         if d["contacted"]:
             m["contactsMade"] += 1
             m["contactCostPaise"] += d["costPaise"]
@@ -321,6 +374,7 @@ def run_batch(
     seed: int | None = None,
     batch_id: str | None = None,
     source_meta: dict | None = None,
+    real_learner=None,
 ) -> dict:
     if not events:
         raise ValueError("run_batch needs at least one leak event")
@@ -336,7 +390,11 @@ def run_batch(
     t0 = time.perf_counter()
     executor.start_batch()
 
-    estimates, baseline_scores, uplift_hats, churn_taus, estimator_label, estimator_mode = _estimates(events, uplift, synthetic)
+    estimates, baseline_scores, uplift_hats, churn_taus, estimator_label, estimator_mode = _estimates(events, uplift, synthetic, real_learner)
+    # Exploration only on real data: on synthetic leaks both branches are known,
+    # so there is nothing to learn from randomising and it would only dilute
+    # the exact comparison.
+    explore_rng = np.random.default_rng(seed ^ 0x5EED) if (not synthetic and merchant.exploration_share > 0) else None
 
     # Agent B ranks by expected net VALUE of the contact: recovery uplift prices
     # what outreach wins, the churn-uplift term prices what it can break, and
@@ -355,15 +413,17 @@ def run_batch(
     b_wants = {ev.event_id: uplift_hats[ev.event_id] > merchant.uplift_threshold and values[ev.event_id] > 0 for ev in events}
 
     dec_a = _run_policy(events, "A", baseline_scores, uplift_hats, lambda ev, s: s >= merchant.baseline_probability, merchant)
-    dec_b = _run_policy(events, "B", values, uplift_hats, lambda ev, s: b_wants[ev.event_id], merchant, net_values=values)
+    dec_b = _run_policy(events, "B", values, uplift_hats, lambda ev, s: b_wants[ev.event_id], merchant, net_values=values, explore_rng=explore_rng)
     metrics_a = _realize(events, dec_a, merchant, synthetic)
     metrics_b = _realize(events, dec_b, merchant, synthetic)
 
     # Traces: diagnosis (LLM where ambiguous), retrieval precedents, gate, execution.
     traces = {}
+    executions: dict[str, dict] = {}
     for ev in events:
         da, db = dec_a[ev.event_id], dec_b[ev.event_id]
         p0_hat, p1_hat, tau_hat, churn_tau_hat = estimates[ev.event_id]
+        executions[ev.event_id] = executor.execute(ev, db["action"])
         per_action = []
         for action in CANDIDATE_ACTIONS:
             is_contact = action != "silent_retry"
@@ -406,9 +466,13 @@ def run_batch(
                 "blockedBy": db["blockedBy"],
                 "deniedAction": ACTION_LABELS[db["deniedAction"]] if db["deniedAction"] else None,
                 "deniedBy": db["deniedBy"],
-                "execution": executor.execute(ev, db["action"]),
+                "execution": executions[ev.event_id],
                 "outcome": db["outcome"],
                 "costPaise": db["costPaise"],
+                "arm": "control" if ev.holdout else "treatment",
+                "wanted": db["wanted"],
+                "explored": db["explored"],
+                "propensity": db["propensity"],
             },
             "agentA": {
                 "chosenAction": da["action"],
@@ -579,6 +643,52 @@ def run_batch(
         )
     stream.append({"kind": "system", "text": "batch complete — comparison written to the shadow ledger", "counters": None})
 
+    # Rows for the leaks table: what the pipeline saw, which arm, what B did
+    # and with what propensity, and — on synthetic data — the outcome.
+    stamp = now_iso()
+    leak_rows = []
+    for ev in events:
+        db = dec_b[ev.event_id]
+        ex = executions[ev.event_id]
+        row = {
+            "eventId": ev.event_id,
+            "synthetic": synthetic,
+            "kind": ev.kind,
+            "source": ev.source,
+            "counterpartyId": ev.customer_id,
+            "contactHash": ev.contact_hash(),
+            "amountPaise": ev.amount_paise,
+            "method": ev.method,
+            "network": ev.network,
+            "reasonCode": ev.reason_code,
+            "rawReason": ev.raw_reason,
+            "failedAt": ev.failed_at,
+            "arm": "control" if ev.holdout else "treatment",
+            "wanted": db["wanted"],
+            "explored": db["explored"],
+            "propensity": db["propensity"],
+            "contacted": db["contacted"],
+            "action": db["action"],
+            "messageClass": db["messageClass"],
+            "paymentId": ev.payment_id or None,
+            "subscriptionId": ev.subscription_id or None,
+            "invoiceId": ev.invoice_id,
+            "orderId": ev.order_id,
+            "externalKind": ex.get("externalKind"),
+            "externalId": ex.get("externalId"),
+            "featureVersion": FEATURE_VERSION,
+            "features": featurize(ev),
+        }
+        if synthetic and db["outcome"] is not None:
+            row.update(
+                outcomeState="resolved",
+                outcomeRecovered=int(db["outcome"]["recovered"]),
+                outcomeChurned=int(db["outcome"]["churned"]),
+                outcomeSource="sim",
+                outcomeAt=stamp,
+            )
+        leak_rows.append(row)
+
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     honesty = _honesty(synthetic, seed, estimator_label, source_name, len(events))
     batch = {
@@ -600,7 +710,8 @@ def run_batch(
             {"key": "baselineProbabilityThreshold", "value": merchant.baseline_probability, "note": "Agent A contacts anything it scores at or above this probability of paying after contact."},
             {"key": "upliftThreshold", "value": merchant.uplift_threshold, "note": "Agent B needs estimated uplift above this before it will spend a contact."},
             {"key": "approvalThresholdPaise", "value": merchant.approval_threshold_paise, "note": "Outreach on leaks above this amount waits for a human approval."},
-            {"key": "holdoutShare", "value": merchant.holdout_share, "note": "Randomised control share held out of contact so real incremental recovery can be measured (applied from phase 2)."},
+            {"key": "holdoutShare", "value": merchant.holdout_share, "note": "Randomised control share, hashed per counterparty, held out of contact by both agents so the policy's real incremental recovery can be measured."},
+            {"key": "explorationShare", "value": merchant.exploration_share, "note": "Share of Agent B's contact decisions flipped at random inside the treatment arm on real data, so contact has a known propensity and uplift can be learned without confounding."},
         ],
         "currency": merchant.currency,
         "eventCount": len(events),
@@ -634,7 +745,7 @@ def run_batch(
         "exceptions": exceptions,
         "streamScript": stream,
     }
-    return {"batch": batch, "traces": traces}
+    return {"batch": batch, "traces": traces, "leakRows": leak_rows}
 
 
 def _honesty(synthetic: bool, seed: int, estimator_label: str, source_name: str, n: int) -> dict:

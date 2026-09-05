@@ -117,6 +117,65 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_case_created ON case_memory (created_at)",
         ],
     ),
+    (
+        3,
+        [
+            # One row per leak per batch: what the pipeline saw, which arm the
+            # counterparty was in, what B did and with what propensity, and the
+            # outcome once it is known. This is the learning loop's training
+            # set and the measurement's ledger.
+            """CREATE TABLE leaks (
+                batch_id TEXT NOT NULL REFERENCES batches(batch_id) ON DELETE CASCADE,
+                event_id TEXT NOT NULL,
+                synthetic INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                source TEXT NOT NULL,
+                counterparty_id TEXT,
+                contact_hash TEXT,
+                amount_paise INTEGER NOT NULL,
+                method TEXT,
+                network TEXT,
+                reason_code TEXT NOT NULL,
+                raw_reason TEXT,
+                failed_at TEXT,
+                arm TEXT NOT NULL,
+                wanted INTEGER NOT NULL,
+                explored INTEGER NOT NULL DEFAULT 0,
+                propensity REAL,
+                contacted INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                message_class TEXT,
+                payment_id TEXT,
+                subscription_id TEXT,
+                invoice_id TEXT,
+                order_id TEXT,
+                external_kind TEXT,
+                external_id TEXT,
+                feature_version INTEGER NOT NULL,
+                features_json TEXT NOT NULL,
+                outcome_state TEXT NOT NULL DEFAULT 'pending',
+                outcome_recovered INTEGER,
+                outcome_churned INTEGER,
+                outcome_source TEXT,
+                outcome_at TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (batch_id, event_id)
+            )""",
+            "CREATE INDEX idx_leaks_event ON leaks (event_id)",
+            "CREATE INDEX idx_leaks_outcome ON leaks (synthetic, outcome_state)",
+            "CREATE INDEX idx_leaks_counterparty ON leaks (counterparty_id)",
+            """CREATE TABLE learning_runs (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                at TEXT NOT NULL,
+                rows_used INTEGER NOT NULL,
+                treated_rows INTEGER NOT NULL,
+                control_rows INTEGER NOT NULL,
+                estimator TEXT NOT NULL,
+                feature_version INTEGER NOT NULL,
+                report_json TEXT NOT NULL
+            )""",
+        ],
+    ),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
@@ -271,6 +330,125 @@ class Store:
                     (event_id,),
                 ).fetchone()
         return json.loads(row["trace_json"]) if row else None
+
+    # ------------------------------------------------------------------ leaks
+
+    def save_leaks(self, batch_id: str, rows: Iterable[dict]) -> int:
+        """One row per leak for this batch. Replaces rows for the same batch id."""
+        created = now_iso()
+        n = 0
+        with self.transaction() as c:
+            c.execute("DELETE FROM leaks WHERE batch_id = ?", (batch_id,))
+            for r in rows:
+                c.execute(
+                    """INSERT INTO leaks (
+                        batch_id, event_id, synthetic, kind, source, counterparty_id, contact_hash, amount_paise,
+                        method, network, reason_code, raw_reason, failed_at, arm, wanted, explored, propensity,
+                        contacted, action, message_class, payment_id, subscription_id, invoice_id, order_id,
+                        external_kind, external_id, feature_version, features_json,
+                        outcome_state, outcome_recovered, outcome_churned, outcome_source, outcome_at, created_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        batch_id, r["eventId"], int(r["synthetic"]), r["kind"], r["source"], r.get("counterpartyId"),
+                        r.get("contactHash"), r["amountPaise"], r.get("method"), r.get("network"), r["reasonCode"],
+                        r.get("rawReason"), r.get("failedAt"), r["arm"], int(r["wanted"]), int(r.get("explored", False)),
+                        r.get("propensity"), int(r["contacted"]), r["action"], r.get("messageClass"), r.get("paymentId"),
+                        r.get("subscriptionId"), r.get("invoiceId"), r.get("orderId"), r.get("externalKind"),
+                        r.get("externalId"), r["featureVersion"], canonical(r["features"]),
+                        r.get("outcomeState", "pending"), r.get("outcomeRecovered"), r.get("outcomeChurned"),
+                        r.get("outcomeSource"), r.get("outcomeAt"), created,
+                    ),
+                )
+                n += 1
+        return n
+
+    @staticmethod
+    def _leak_row(r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["features"] = json.loads(d.pop("features_json"))
+        return d
+
+    def leaks_for_batch(self, batch_id: str) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute("SELECT * FROM leaks WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()
+        return [self._leak_row(r) for r in rows]
+
+    def latest_leak(self, event_id: str) -> dict | None:
+        with self.lock:
+            r = self.conn.execute(
+                """SELECT l.* FROM leaks l JOIN batches b ON b.batch_id = l.batch_id
+                   WHERE l.event_id = ? ORDER BY b.created_at DESC, b.rowid DESC LIMIT 1""",
+                (event_id,),
+            ).fetchone()
+        return self._leak_row(r) if r else None
+
+    def pending_real_leaks(self, max_age_days: int = 30, limit: int = 2000) -> list[dict]:
+        """Real leaks whose outcome is not yet known, newest first."""
+        with self.lock:
+            rows = self.conn.execute(
+                """SELECT * FROM leaks WHERE synthetic = 0 AND outcome_state = 'pending'
+                   AND created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?""",
+                (f"-{int(max_age_days)} days", limit),
+            ).fetchall()
+        return [self._leak_row(r) for r in rows]
+
+    def set_outcome(self, batch_id: str, event_id: str, *, recovered: bool | None, churned: bool | None, source: str, state: str = "resolved") -> bool:
+        with self.transaction() as c:
+            cur = c.execute(
+                """UPDATE leaks SET outcome_state = ?, outcome_recovered = ?, outcome_churned = ?, outcome_source = ?, outcome_at = ?
+                   WHERE batch_id = ? AND event_id = ?""",
+                (state, None if recovered is None else int(recovered), None if churned is None else int(churned), source, now_iso(), batch_id, event_id),
+            )
+        return cur.rowcount > 0
+
+    def resolved_real_leaks(self) -> list[dict]:
+        """Real leaks with a known outcome — the learning loop's training set.
+        One row per event (the latest batch that saw it)."""
+        with self.lock:
+            rows = self.conn.execute(
+                """SELECT l.* FROM leaks l JOIN batches b ON b.batch_id = l.batch_id
+                   WHERE l.synthetic = 0 AND l.outcome_state = 'resolved'
+                   AND b.created_at = (
+                       SELECT MAX(b2.created_at) FROM leaks l2 JOIN batches b2 ON b2.batch_id = l2.batch_id
+                       WHERE l2.event_id = l.event_id
+                   )
+                   ORDER BY l.created_at"""
+            ).fetchall()
+        return [self._leak_row(r) for r in rows]
+
+    def leak_counts(self) -> dict:
+        with self.lock:
+            row = self.conn.execute(
+                """SELECT
+                     SUM(CASE WHEN synthetic = 0 THEN 1 ELSE 0 END),
+                     SUM(CASE WHEN synthetic = 0 AND outcome_state = 'pending' THEN 1 ELSE 0 END),
+                     SUM(CASE WHEN synthetic = 0 AND outcome_state = 'resolved' THEN 1 ELSE 0 END),
+                     SUM(CASE WHEN synthetic = 0 AND arm = 'control' THEN 1 ELSE 0 END),
+                     SUM(CASE WHEN synthetic = 0 AND explored = 1 THEN 1 ELSE 0 END),
+                     SUM(CASE WHEN synthetic = 1 THEN 1 ELSE 0 END)
+                   FROM leaks"""
+            ).fetchone()
+        real, pending, resolved, control, explored, synthetic = (int(x or 0) for x in row)
+        return {"real": real, "pending": pending, "resolved": resolved, "control": control, "explored": explored, "synthetic": synthetic}
+
+    # -------------------------------------------------------------- learning
+
+    def save_learning_run(self, report: dict) -> int:
+        with self.transaction() as c:
+            cur = c.execute(
+                "INSERT INTO learning_runs (at, rows_used, treated_rows, control_rows, estimator, feature_version, report_json) VALUES (?,?,?,?,?,?,?)",
+                (now_iso(), report["rowsUsed"], report["treatedRows"], report["controlRows"], report["estimator"], report["featureVersion"], canonical(report)),
+            )
+        return int(cur.lastrowid)
+
+    def latest_learning_run(self) -> dict | None:
+        with self.lock:
+            r = self.conn.execute("SELECT at, report_json FROM learning_runs ORDER BY seq DESC LIMIT 1").fetchone()
+        if not r:
+            return None
+        out = json.loads(r["report_json"])
+        out["at"] = r["at"]
+        return out
 
     # ------------------------------------------------------------------ audit
 

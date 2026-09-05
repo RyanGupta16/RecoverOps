@@ -23,9 +23,15 @@ category = "subscription"
 # matter at all: with a generous budget both policies contact everyone the gate
 # allows and the comparison collapses to parity.
 contact_budget_per_batch = 120
-# Randomised control share held out of contact at ingestion so real
-# incremental recovery can be measured. Applied from phase 2.
+# Randomised control share held out of contact at ingestion — hashed per
+# counterparty, so a customer stays in one arm — so the policy's real
+# incremental recovery can be measured against people it never touched.
 holdout_share = 0.10
+# Inside the treatment arm, Agent B flips this share of its contact decisions
+# at random. Every contactable leak then has a known propensity of contact
+# (1 − ε or ε), which is what lets the estimators retrain on real outcomes
+# without confounding. Costs about ε of the budget; buys identifiability.
+exploration_share = 0.10
 # Residual subscription value, in billing cycles, used to price churn caused by outreach.
 churn_residual_cycles = 3
 # Actions on leaks above this need a human approval before outreach.

@@ -7,9 +7,12 @@ import type {
   ExceptionRecord,
   FileIngestMeta,
   LeakSourceInfo,
+  LearningRun,
+  LearningStatus,
   RunBatchOptions,
   SleepingDogRecord,
   Sourced,
+  SyncReport,
 } from './types';
 
 /**
@@ -128,6 +131,38 @@ export async function startBatchRun(opts: RunBatchOptions = {}): Promise<RunOutc
 
 export async function fetchSources(): Promise<LeakSourceInfo[]> {
   return (await backend<LeakSourceInfo[]>('/api/sources')) ?? [];
+}
+
+export function fetchLearningStatus(): Promise<LearningStatus | null> {
+  return backend<LearningStatus>('/api/learning/status');
+}
+
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = (await res.json().catch(() => ({}))) as T & { detail?: string };
+  if (!res.ok) throw new Error(json.detail ?? `Backend answered ${res.status}.`);
+  return json;
+}
+
+/** Polls Razorpay for every pending real leak and attributes what it finds. */
+export function syncOutcomes(): Promise<SyncReport> {
+  return postJson<SyncReport>('/api/outcomes/sync');
+}
+
+/** Records an outcome by hand — labelled as manual in the ledger, never as a webhook. */
+export function markOutcome(eventId: string, recovered: boolean, churned = false, note = '') {
+  return postJson<{ eventId: string; recovered: boolean; churned: boolean; source: string }>(
+    '/api/outcomes/mark',
+    { eventId, recovered, churned, note },
+  );
+}
+
+export function retrainLearner(): Promise<LearningRun> {
+  return postJson<LearningRun>('/api/learning/retrain');
 }
 
 /** Uploads a Razorpay payments export; the backend answers with what it found in it. */

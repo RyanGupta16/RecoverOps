@@ -3,8 +3,9 @@
 import { animate, onScroll, stagger } from 'animejs';
 import { BRAND_EASE, REVEAL_TRIGGER, useAnimeScope } from '@/components/motion/useAnimeScope';
 import { DemoModeBadge } from '@/components/ui/primitives';
-import { rupeesPrecise, SEGMENT_LABELS, signed } from '@/lib/format';
+import { rupeesPrecise, SEGMENT_LABELS, shortTime, signed } from '@/lib/format';
 import type { DataSource, DecisionTrace, Outcome } from '@/lib/types';
+import { OutcomeMarker } from './OutcomeMarker';
 import { RuleVerdictBadge, TerminalPanel } from './primitives';
 
 function outcomeWord(o: Outcome): string {
@@ -322,14 +323,48 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
               </p>
             </TerminalPanel>
           ) : (
-            <TerminalPanel title="06 · Outcome" meta="pending — real data">
-              <p className="text-[12px] leading-relaxed text-ink-dim">
-                No outcome is known yet. The branch not taken is never observed on real data, and
-                the branch taken has not resolved. The learning loop attributes the outcome when
-                Razorpay reports it — <span className="font-mono text-ink">subscription.charged</span>,{' '}
-                <span className="font-mono text-ink">payment_link.paid</span> — and only then does
-                this leak count toward measured recovery.
-              </p>
+            <TerminalPanel
+              title="06 · Outcome"
+              meta={
+                trace.outcomeAttribution
+                  ? `${trace.outcomeAttribution.state} · ${trace.outcomeAttribution.source ?? 'unknown source'}`
+                  : 'pending — real data'
+              }
+            >
+              {trace.outcomeAttribution ? (
+                <div>
+                  <p className="font-mono text-[20px] tabular-nums text-ink">
+                    {trace.outcomeAttribution.state === 'resolved' ? outcomeWord(agentB.outcome) : 'unresolved'}
+                  </p>
+                  <p className="mt-1.5 text-[11.5px] leading-relaxed text-ink-mute">
+                    Attributed via <span className="font-mono text-ink-dim">{trace.outcomeAttribution.source}</span>
+                    {trace.outcomeAttribution.at && ` at ${shortTime(trace.outcomeAttribution.at)}`}. This leak now
+                    counts in the measured policy effect and in case memory. The decision trace above is
+                    unchanged — the outcome is overlaid, never rewritten.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-[12px] leading-relaxed text-ink-dim">
+                  No outcome is known yet. The branch not taken is never observed on real data, and
+                  the branch taken has not resolved. The learning loop attributes the outcome when
+                  Razorpay reports it — <span className="font-mono text-ink">subscription.charged</span>,{' '}
+                  <span className="font-mono text-ink">payment_link.paid</span> — and only then does
+                  this leak count toward measured recovery.
+                </p>
+              )}
+              {agentB.arm && (
+                <p className="mt-3 font-mono text-[11px] text-ink-mute">
+                  arm <span className={agentB.arm === 'control' ? 'text-amber' : 'text-ink-dim'}>{agentB.arm}</span>
+                  {agentB.propensity != null && (
+                    <>
+                      {' '}
+                      · P(contact) <span className="text-ink-dim">{agentB.propensity.toFixed(2)}</span>
+                    </>
+                  )}
+                  {agentB.explored && <span className="text-brass"> · explored (decision flipped at random)</span>}
+                </p>
+              )}
+              {!trace.outcomeAttribution && source === 'live' && <OutcomeMarker eventId={trace.eventId} />}
               {leak && (
                 <dl className="mt-3 grid grid-cols-[142px_1fr] gap-x-4 gap-y-2 border-t border-hairline pt-3 font-mono text-[11.5px]">
                   <dt className="text-ink-mute">baseline_action</dt>

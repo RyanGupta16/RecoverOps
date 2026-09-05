@@ -132,6 +132,24 @@ def _hash_id(*parts: str) -> str:
     return hashlib.sha256("|".join(p for p in parts if p).encode("utf-8")).hexdigest()[:12]
 
 
+def assign_holdout(counterparty_key: str, share: float, salt: str = "recoverops-holdout-v1") -> bool:
+    """Deterministic per-counterparty arm assignment. Hash-based so a customer
+    is in the same arm on every batch — an arm that flips between runs would
+    contaminate the comparison — and reproducible without storing anything."""
+    if share <= 0:
+        return False
+    h = hashlib.sha256(f"{salt}|{counterparty_key}".encode("utf-8")).digest()
+    u = int.from_bytes(h[:8], "big") / float(1 << 64)
+    return u < share
+
+
+def apply_holdout(leaks: list[LeakEvent], share: float) -> list[LeakEvent]:
+    for ev in leaks:
+        key = ev.customer_id or ev.contact_hash() or ev.event_id
+        ev.holdout = assign_holdout(key, share)
+    return leaks
+
+
 def _get(p: dict, *keys: str, default: Any = None) -> Any:
     """First present, non-empty key — tolerates API and export column names."""
     for k in keys:

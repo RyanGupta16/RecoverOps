@@ -9,6 +9,7 @@ const TABS = [
   { href: '/console/sleeping-dogs', label: 'Sleeping dogs' },
   { href: '/console/exceptions', label: 'Exceptions' },
   { href: '/console/history', label: 'History' },
+  { href: '/console/learning', label: 'Learning' },
 ];
 
 /**

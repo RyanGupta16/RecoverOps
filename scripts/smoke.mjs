@@ -168,6 +168,7 @@ for (const [name, path] of [
   ['dogs', '/console/sleeping-dogs'],
   ['exceptions', '/console/exceptions'],
   ['history', '/console/history'],
+  ['learning', '/console/learning'],
 ]) {
   const { page, log } = await openPage(browser);
   await page.goto(BASE + path, { waitUntil: 'networkidle2', timeout: 45000 });

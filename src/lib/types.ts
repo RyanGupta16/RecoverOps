@@ -57,6 +57,8 @@ export interface AgentMetrics {
   outcomesPending?: number;
   /** Events assigned to the randomised control arm (silent path for both agents). */
   holdoutEvents?: number;
+  /** Agent B decisions flipped at random for exploration (real data only). */
+  exploredDecisions?: number;
 }
 
 export interface CurvePoint {
@@ -300,9 +302,23 @@ export interface DecisionTrace {
     blockedBy: string | null;
     deniedAction: string | null;
     deniedBy: string | null;
-    execution: { mode: string; detail: string; mocked: boolean };
+    execution: {
+      mode: string;
+      detail: string;
+      mocked: boolean;
+      externalKind?: 'order' | 'payment_link' | null;
+      externalId?: string | null;
+    };
     outcome: Outcome;
     costPaise?: number;
+    /** Which randomised arm the counterparty is in. */
+    arm?: 'control' | 'treatment';
+    /** Whether the policy wanted to contact before exploration. */
+    wanted?: boolean;
+    /** Whether exploration flipped the decision. */
+    explored?: boolean;
+    /** P(contact | features) under the policy — 1−ε, ε, or 0 where contact was impossible. */
+    propensity?: number | null;
   };
   agentA: {
     chosenAction: string;
@@ -318,6 +334,67 @@ export interface DecisionTrace {
     churnControl: number;
     churnTreat: number;
   } | null;
+  /** Present once a real leak's outcome has been attributed (overlaid at read time). */
+  outcomeAttribution?: {
+    state: 'resolved' | 'unresolved';
+    source: string | null;
+    at: string | null;
+  };
+}
+
+/** GET /api/learning/status */
+export interface PolicyEffect {
+  treatmentRows: number;
+  controlRows: number;
+  rateTreatment: number | null;
+  rateControl: number | null;
+  ateRate: number | null;
+  ateRateCi: [number, number] | null;
+  incrementalPaise: number | null;
+  incrementalPaiseCi: [number, number] | null;
+  measurable: boolean;
+  note: string | null;
+}
+
+export interface LearningRun {
+  at?: string;
+  rowsUsed: number;
+  treatedRows: number;
+  controlRows: number;
+  resolvedRows?: number;
+  estimator: string;
+  featureVersion: number;
+  ready: boolean;
+  qiniReal: number | null;
+  note: string | null;
+}
+
+export interface LearningStatus {
+  counts: {
+    real: number;
+    pending: number;
+    resolved: number;
+    control: number;
+    explored: number;
+    synthetic: number;
+  };
+  estimatorMode: 'priors' | 'learned-real';
+  estimator: string;
+  lastRun: LearningRun | null;
+  policyEffect: PolicyEffect;
+  thresholds: { minRows: number; minPerArm: number };
+  featureVersion: number;
+}
+
+export interface SyncReport {
+  checked: number;
+  recovered: number;
+  churned: number;
+  stale: number;
+  stillPending: number;
+  errors: string[];
+  live: boolean;
+  retrain?: LearningRun;
 }
 
 /** GET /api/sources */

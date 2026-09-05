@@ -47,8 +47,10 @@ class Executor:
             return True
 
     def execute(self, ev: Event, action: str) -> dict:
+        """Returns the execution record. `externalKind`/`externalId` name the
+        Razorpay object created, when one was, so outcome attribution can poll it."""
         if action == "escalate":
-            return {"mode": "none", "detail": "No call made. Case routed to the exception queue.", "mocked": False}
+            return {"mode": "none", "detail": "No call made. Case routed to the exception queue.", "mocked": False, "externalKind": None, "externalId": None}
 
         amount_str = f"₹{ev.amount_paise / 100:.2f}"
         if action == "silent_retry":
@@ -74,12 +76,16 @@ class Executor:
                             f"Subscription {ev.subscription_id} left in `pending` for Razorpay's T+1 auto-retry."
                         ),
                         "mocked": False,
+                        "externalKind": "order",
+                        "externalId": order["id"],
                     }
                 except Exception as exc:  # noqa: BLE001 — an executor failure must not sink the batch
                     return {
                         "mode": "razorpay_test_mode",
                         "detail": f"POST /v1/orders failed ({type(exc).__name__}) — retry recorded locally, test mode.",
                         "mocked": True,
+                        "externalKind": None,
+                        "externalId": None,
                     }
             note = "call budget reached for this batch" if self.client else "no API keys configured"
             return {
@@ -89,6 +95,8 @@ class Executor:
                     f"(no merchant retry endpoint exists). Retry order not created — {note}."
                 ),
                 "mocked": True,
+                "externalKind": None,
+                "externalId": None,
             }
 
         # Outreach actions: payment link via the real API where allowed.
@@ -96,28 +104,40 @@ class Executor:
         kind = "card update" if action == "card_update_request" else "payment link"
         if self._take_live_slot():
             try:
-                link = self.client.payment_link.create(
-                    {
-                        "amount": ev.amount_paise,
-                        "currency": "INR",
-                        "description": f"RecoverOps {kind} · {ev.plan_name}",
-                        "notes": {"recoverops": action, "event": ev.event_id},
-                    }
-                )
+                payload: dict = {
+                    "amount": ev.amount_paise,
+                    "currency": "INR",
+                    "description": f"RecoverOps {kind} · {ev.plan_name}",
+                    "notes": {"recoverops": action, "event": ev.event_id},
+                    # Razorpay is the registered sender: with a real contact on the
+                    # leak and notify enabled, Razorpay delivers the SMS/email in live
+                    # mode. In test mode nothing is sent. Nothing else ever sends.
+                    "notify": {"sms": bool(ev.contact), "email": bool(ev.email)},
+                    "reminder_enable": True,
+                }
+                if ev.contact or ev.email:
+                    payload["customer"] = {k: v for k, v in (("contact", ev.contact), ("email", ev.email)) if v}
+                link = self.client.payment_link.create(payload)
                 return {
                     "mode": "razorpay_test_mode",
-                    "detail": f"POST /v1/payment_links → {link['id']} — {kind}, {amount_str}, test mode. {channel} delivery mocked.",
+                    "detail": f"POST /v1/payment_links → {link['id']} — {kind}, {amount_str}, test mode. Razorpay notify {'requested' if (ev.contact or ev.email) else 'not requested (no contact on leak)'}; {channel} delivery mocked.",
                     "mocked": True,  # delivery is mocked even when the link is real
+                    "externalKind": "payment_link",
+                    "externalId": link["id"],
                 }
             except Exception as exc:  # noqa: BLE001
                 return {
                     "mode": "razorpay_test_mode",
                     "detail": f"POST /v1/payment_links failed ({type(exc).__name__}) — {kind} recorded locally, {amount_str}. {channel} delivery mocked.",
                     "mocked": True,
+                    "externalKind": None,
+                    "externalId": None,
                 }
         note = "call budget reached for this batch" if self.client else "no API keys configured"
         return {
             "mode": "razorpay_test_mode",
             "detail": f"POST /v1/payment_links — {kind}, {amount_str}, test mode ({note}). {channel} delivery mocked.",
             "mocked": True,
+            "externalKind": None,
+            "externalId": None,
         }

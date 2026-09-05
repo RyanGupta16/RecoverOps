@@ -41,6 +41,9 @@ class MerchantConfig:
 
     contact_budget_per_batch: int = 120
     holdout_share: float = 0.10
+    # Share of Agent B's contact decisions flipped at random inside the treatment
+    # arm, so contact has a known propensity and per-event uplift is learnable.
+    exploration_share: float = 0.10
     churn_residual_cycles: int = 3
     approval_threshold_paise: int = 1_000_000
     discount_cap_pct: int = 5
@@ -98,6 +101,7 @@ class MerchantConfig:
 
         cfg.contact_budget_per_batch = int(b.get("contact_budget_per_batch", cfg.contact_budget_per_batch))
         cfg.holdout_share = float(b.get("holdout_share", cfg.holdout_share))
+        cfg.exploration_share = float(b.get("exploration_share", cfg.exploration_share))
         cfg.churn_residual_cycles = int(b.get("churn_residual_cycles", cfg.churn_residual_cycles))
         cfg.approval_threshold_paise = int(b.get("approval_threshold_paise", cfg.approval_threshold_paise))
         cfg.discount_cap_pct = int(b.get("discount_cap_pct", cfg.discount_cap_pct))
@@ -157,6 +161,7 @@ class MerchantConfig:
             "afaLimitPaise": self.afa_limit_paise,
             "contactBudgetPerBatch": self.contact_budget_per_batch,
             "holdoutShare": self.holdout_share,
+            "explorationShare": self.exploration_share,
             "churnResidualCycles": self.churn_residual_cycles,
             "approvalThresholdPaise": self.approval_threshold_paise,
             "discountCapPct": self.discount_cap_pct,

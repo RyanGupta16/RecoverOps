@@ -73,6 +73,11 @@ Expected backend endpoints (`src/lib/api.ts` is typed against them):
 | `GET`  | `/api/exceptions`               | exception queue, latest batch             |
 | `GET`  | `/api/audit?limit=&kind=&ref=`  | history tab, audit log tail               |
 | `GET`  | `/api/audit/verify`             | history tab, hash-chain verification      |
+| `GET`  | `/api/sources`                  | batch runner source selector              |
+| `POST` | `/api/ingest/file`              | batch runner upload                       |
+| `GET`  | `/api/merchant` · `/api/policy/rules` | config and the cited rule catalogue |
+| `POST` | `/api/outcomes/sync` · `/api/outcomes/mark` | learning tab, trace outcome marker |
+| `GET`  | `/api/learning/status` · `POST /api/learning/retrain` | learning tab              |
 
 Every console page asks the backend first and falls back to the bundled synthetic batch,
 served from `/api/sample/*` route handlers so the 800 KB dataset never enters the client
@@ -97,6 +102,28 @@ such in every trace. Raw contact details never enter the ledger — only a hash.
 
 `backend/merchant.toml` is the onboarding config: budget, thresholds, which channels are
 real, message costs by class, contact windows, MSME status, AFA category.
+
+### The learning loop
+
+On real data nobody sees the branch not taken, so two things are randomised on purpose:
+
+- **A control arm.** Every counterparty is hashed into a 10% control share at ingestion and
+  never contacted, by either agent. The difference in recovery between the treatment arm and
+  the control arm is the policy's measured effect — a randomised comparison that needs no
+  model, reported with a 95% bootstrap interval that tightens as outcomes resolve.
+- **Exploration.** Inside the treatment arm Agent B flips 10% of its contact decisions at
+  random, so every contactable leak has a *known* propensity of contact (1−ε or ε; 0 where
+  the gate or the budget made contact impossible). Known propensities are what let the
+  estimators refit on real rows with inverse-propensity weights instead of learning the
+  policy's own biases back.
+
+Outcomes arrive from Razorpay — `POST /api/outcomes/sync` polls the payment link the
+executor created, the retry order, the subscription's state, and captured payments from the
+same customer; with keys configured this runs every ten minutes — or are recorded by an
+operator from the trace view, labelled `manual` in the ledger. Each attribution is an audit
+row and a case-memory write. The real-data estimator refits every fifty newly resolved rows
+and is used only once it beats random on a chronological holdout; until then the batch says
+`estimatorMode: priors`. All of this is on the **Learning** tab.
 
 ### The ledger
 
@@ -181,6 +208,7 @@ src/
       sleeping-dogs/            every no-action decision, and why
       exceptions/               unresolved cases with structured reasons
       history/                  every batch on record + the audit chain
+      learning/                 arms, measured policy effect, sync and retrain
     api/sample/                 demo-mode fallback endpoints
   components/
     motion/                     useAnimeScope, Reveal, CountUp
@@ -193,11 +221,20 @@ src/
     sample.server.ts  server-only access to the bundled batch
 backend/
   app/
-    store.py      SQLite ledger: batches, traces, case memory, hash-chained audit log
+    store.py      SQLite ledger: batches, traces, leaks, case memory, hash-chained audit log
     runtime.py    the live layers wired once; the one way to run and persist a batch
-    engine.py     batch orchestration over the seven layers
-    sim.py  uplift.py  retrieval.py  policy.py  diagnosis.py  executor.py
+    engine.py     batch orchestration over the seven layers, synthetic or real
+    leaks.py      LeakEvent — every kind of revenue at risk, one object
+    taxonomy.py   Razorpay error_reason → thirteen reason families
+    sources.py    simulator · Razorpay account · uploaded export, one interface
+    merchant.py   merchant.toml onboarding config
+    policy.py     the gate: 21 ordered rules with citations
+    outcomes.py   outcome attribution from Razorpay or an operator
+    learning.py   measured policy effect + real-data estimator with known propensities
+    sim.py  uplift.py  retrieval.py  diagnosis.py  executor.py
+    export_sample.py  regenerate the bundled demo batch from this engine
     seed.py       python -m app.seed — fill history and case memory on a fresh clone
+  merchant.toml
   tests/          pytest
 data/             generated — do not hand-edit
 assets/           source video for the background
