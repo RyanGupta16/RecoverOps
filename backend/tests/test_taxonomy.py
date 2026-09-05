@@ -40,3 +40,36 @@ def test_unknown_reasons_fall_back_by_source():
 
 def test_side_vocabulary_is_closed():
     assert {f.side for f in FAMILIES.values()} <= {"customer", "issuer", "risk", "merchant"}
+
+
+def test_llm_classification_is_advisory_and_never_gates():
+    """A model that can move a leak between policy paths is a model that can
+    change what the gate does. It must not be able to."""
+    from app.diagnosis import Diagnoser
+    from app.retrieval import Corpus
+    from app.sim import generate_events
+
+    d = Diagnoser(Corpus())
+    ev = next(e for e in generate_events(3, count=400) if e.ambiguous)
+    gate_side = ev.failure_side
+
+    # Pretend the model came back with a different side than the mapping.
+    other = "merchant" if gate_side != "merchant" else "customer"
+    d._cache[ev.reason_code] = {"failure_side": other, "latency_ms": 900, "note": "model said so."}
+
+    out = d.diagnose(ev)
+    assert out["method"] == "llm_fallback"
+    assert out["failureSide"] == gate_side, "the gate's side must be the deterministic one"
+    assert out["modelFailureSide"] == other
+    assert out["modelAdvisory"] is True and out["disagreesWithGate"] is True
+    assert "must not be able" in out["note"]
+
+    # Agreement is not flagged as a disagreement.
+    d._cache[ev.reason_code] = {"failure_side": gate_side, "latency_ms": 900, "note": "agrees."}
+    agreed = d.diagnose(ev)
+    assert agreed["disagreesWithGate"] is False and agreed["failureSide"] == gate_side
+
+    # A deterministic lookup makes no model claim at all.
+    plain = next(e for e in generate_events(3, count=400) if not e.ambiguous)
+    det = d.diagnose(plain)
+    assert det["modelFailureSide"] is None and det["modelAdvisory"] is False

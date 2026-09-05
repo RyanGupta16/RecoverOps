@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import os
 
-from app.executor import Executor
+import pytest
+
+from app.executor import DEFAULT_MAX_LIVE_CALLS, Executor
 from app.sim import generate_events
 
 
@@ -44,6 +45,21 @@ def test_live_call_cap_is_per_batch(monkeypatch):
     _no_keys(monkeypatch)
     monkeypatch.setenv("EXECUTOR_MAX_LIVE_CALLS", "2")
     ex = Executor()
+    assert ex.max_live_calls == 2
     # No client → never takes a slot, regardless of cap.
     assert ex._take_live_slot() is False
-    assert os.environ["EXECUTOR_MAX_LIVE_CALLS"] == "2"
+
+
+@pytest.mark.parametrize("value", ["", "   ", "not-a-number"])
+def test_blank_or_bad_numeric_env_falls_back_instead_of_crashing(monkeypatch, value):
+    """A copied .env template leaves `EXECUTOR_MAX_LIVE_CALLS=` blank. That must
+    not stop the backend booting — an empty variable is an absent one."""
+    _no_keys(monkeypatch)
+    monkeypatch.setenv("EXECUTOR_MAX_LIVE_CALLS", value)
+    assert Executor().max_live_calls == DEFAULT_MAX_LIVE_CALLS
+
+
+def test_absent_numeric_env_uses_the_default(monkeypatch):
+    _no_keys(monkeypatch)
+    monkeypatch.delenv("EXECUTOR_MAX_LIVE_CALLS", raising=False)
+    assert Executor().max_live_calls == DEFAULT_MAX_LIVE_CALLS

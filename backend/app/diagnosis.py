@@ -11,6 +11,14 @@ free-associating). Result is cached per reason code for the process lifetime —
 the ambiguity is a property of the code, not of the individual payment, so
 re-asking per event would buy latency and spend for zero information.
 
+Its classification is **advisory**. The gate runs on the deterministic family
+mapping, never on the model's answer: a model that can move a leak from
+"issuer-side, back off" to "merchant-side, never contact" is a model that can
+change what the policy does, and the whole point of the gate sitting after the
+engine is that it cannot. Where the two disagree the trace shows both, because
+a persistent disagreement means the taxonomy is wrong and should be fixed at
+the mapping rather than smoothed over per event.
+
 Without a key the fallback is labelled as mocked in the trace note. It never
 pretends a model was called.
 """
@@ -46,6 +54,9 @@ class Diagnoser:
                 "reasonCode": ev.reason_code,
                 "reasonLabel": ev.reason_label,
                 "failureSide": ev.failure_side,
+                "modelFailureSide": None,
+                "modelAdvisory": False,
+                "disagreesWithGate": False,
                 "latencyMs": 0,
                 "note": f"{via}Resolved from the deterministic lookup table. No model call, no latency, no cost.",
             }
@@ -54,13 +65,33 @@ class Diagnoser:
         if cached is None:
             cached = self._classify(ev)
             self._cache[ev.reason_code] = cached
+        # The model's read is ADVISORY. The gate runs on the deterministic
+        # family mapping, and must: a model that can move a leak between
+        # "issuer-side, back off" and "merchant-side, never contact" is a model
+        # that can change what the policy does. Where the two disagree, both
+        # are shown — a persistent disagreement means the taxonomy needs fixing
+        # at the mapping, not smoothing over per event.
+        model_side = cached["failure_side"]
+        disagrees = model_side != ev.failure_side
+        note = cached["note"]
+        if disagrees:
+            note = (
+                f"{note} The model reads this as {model_side}-side; the gate ran on the deterministic "
+                f"{ev.failure_side}-side mapping for {ev.reason_code}, because a model must not be able "
+                "to move a leak between policy paths."
+            )
         return {
             "method": "llm_fallback",
             "reasonCode": ev.reason_code,
             "reasonLabel": ev.reason_label,
-            "failureSide": cached["failure_side"],
+            # What the gate actually used.
+            "failureSide": ev.failure_side,
+            # What the model thought, kept separate and labelled.
+            "modelFailureSide": model_side,
+            "modelAdvisory": True,
+            "disagreesWithGate": disagrees,
             "latencyMs": cached["latency_ms"],
-            "note": cached["note"],
+            "note": note,
         }
 
     def _classify(self, ev: Event) -> dict:

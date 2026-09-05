@@ -427,7 +427,12 @@ export interface DecisionTrace {
     method: 'deterministic_lookup' | 'llm_fallback';
     reasonCode: string;
     reasonLabel: string;
+    /** The side the gate actually ran on — always the deterministic mapping. */
     failureSide: string;
+    /** What the model read, kept separate: its classification never gates. */
+    modelFailureSide?: string | null;
+    modelAdvisory?: boolean;
+    disagreesWithGate?: boolean;
     latencyMs: number;
     note: string;
   };

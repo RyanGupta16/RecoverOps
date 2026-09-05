@@ -82,7 +82,23 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
               <dt className="text-ink-mute">description</dt>
               <dd className="text-ink-dim">{diagnosis.reasonLabel}</dd>
               <dt className="text-ink-mute">attributed</dt>
-              <dd className="text-ink-dim">{diagnosis.failureSide}-side</dd>
+              <dd className="text-ink-dim">
+                {diagnosis.failureSide}-side
+                <span className="ml-2 text-[10px] uppercase tracking-[0.08em] text-ink-mute">
+                  used by the gate
+                </span>
+              </dd>
+              {diagnosis.modelFailureSide && (
+                <>
+                  <dt className="text-ink-mute">model reads</dt>
+                  <dd className={diagnosis.disagreesWithGate ? 'text-brass' : 'text-ink-dim'}>
+                    {diagnosis.modelFailureSide}-side
+                    <span className="ml-2 text-[10px] uppercase tracking-[0.08em] text-ink-mute">
+                      {diagnosis.disagreesWithGate ? 'disagrees · advisory only' : 'advisory'}
+                    </span>
+                  </dd>
+                </>
+              )}
               <dt className="text-ink-mute">model_latency</dt>
               <dd
                 className={

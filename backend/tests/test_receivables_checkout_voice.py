@@ -234,6 +234,29 @@ def test_intent_classification_prioritises_objections():
     assert classify_intent("hmm")[0] == "unclear"
     # A reply that both promises and objects is read as the objection.
     assert classify_intent("yeh galat hai lekin kal kar dunga")[0] == "dispute"
+    # "abhi busy hoon, baad mein call kijiye" contains "abhi" but asks us to stop.
+    assert classify_intent("abhi busy hoon, baad mein call kijiye")[0] == "callback"
+
+
+def test_intent_and_dates_work_on_devanagari_transcripts():
+    """Saaras returns code-mixed transcripts in mixed script. Matching only the
+    romanisation would silently drop real promises — the worst failure here."""
+    # Verbatim output from Sarvam saaras:v3 for "kal tak payment kar dunga".
+    real = "मैं कल तक payment कर दूँगा।"
+    assert classify_intent(real)[0] == "promise"
+    assert extract_promise_date(real, NOW).date() == (NOW + timedelta(days=1)).date()
+
+    assert classify_intent("लिंक भेज दीजिए")[0] == "send_link"
+    assert classify_intent("नहीं चाहिए, बंद कर दीजिए")[0] == "decline"
+    assert classify_intent("मैंने तो कैंसिल कर दिया था, ये गलत है")[0] == "dispute"
+    assert classify_intent("अभी busy हूँ, बाद में call कीजिए")[0] == "callback"
+
+    # Devanagari digits parse as dates.
+    ist = timezone(timedelta(hours=5, minutes=30))
+    assert extract_promise_date("१२ तारीख तक कर दूँगा", NOW).astimezone(ist).day == 12
+    assert extract_promise_date("सैलरी आते ही कर दूँगा", NOW).astimezone(ist).day == 1
+    # Still conservative in either script.
+    assert extract_promise_date("जल्दी कर दूँगा", NOW) is None
 
 
 def test_promise_date_extraction_is_conservative():

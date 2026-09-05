@@ -23,12 +23,29 @@ try:
 except ImportError:  # pragma: no cover
     razorpay = None
 
+DEFAULT_MAX_LIVE_CALLS = 8
+
+
+def env_int(name: str, default: int) -> int:
+    """An env var that is present but empty is the normal state of a copied
+    template (``KEY=`` with nothing after it), and ``os.environ.get(name,
+    default)`` returns the empty string in that case rather than the default.
+    Reading it with a bare ``int()`` then refuses to boot the entire backend
+    over one blank line. Treat empty and unparseable as absent."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
 
 class Executor:
     def __init__(self) -> None:
         key_id = os.environ.get("RAZORPAY_KEY_ID", "").strip()
         key_secret = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
-        self.max_live_calls = int(os.environ.get("EXECUTOR_MAX_LIVE_CALLS", "8"))
+        self.max_live_calls = env_int("EXECUTOR_MAX_LIVE_CALLS", DEFAULT_MAX_LIVE_CALLS)
         self._lock = threading.Lock()
         self._live_calls_made = 0
         self.client = None
