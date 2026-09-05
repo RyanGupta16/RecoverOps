@@ -4,10 +4,13 @@ import { POLICY_RULES } from '@/lib/policy';
 import { PolicyTable } from './PolicyTable';
 
 const RULE_COUNT_WORDS: Record<number, string> = {
-  12: 'Twelve',
   20: 'Twenty',
   21: 'Twenty-one',
   22: 'Twenty-two',
+  27: 'Twenty-seven',
+  28: 'Twenty-eight',
+  29: 'Twenty-nine',
+  30: 'Thirty',
 };
 
 export function PolicySection() {
@@ -39,9 +42,9 @@ export function PolicySection() {
           </h3>
           <p className="mt-3.5 text-[14px] leading-[1.66] text-ink-dim">
             Under TRAI&rsquo;s TCCCPR amendment of February 2025, a message is{' '}
-            <em>transactional</em> only if it answers a customer-initiated transaction within
-            thirty minutes. A recurring charge is merchant-initiated, so a failed-subscription notice
-            is never transactional — it is a <em>service</em> message about a product the customer
+            <em>transactional</em> only if it answers a customer-initiated transaction within thirty
+            minutes. A recurring charge is merchant-initiated, so a failed-subscription notice is
+            never transactional — it is a <em>service</em> message about a product the customer
             holds: no explicit consent, no time band. Put an incentive in it and the whole message
             becomes <em>promotional</em>: consent record, DND scrub, 09:00–21:00 IST, and consent
             given to complete a purchase expires after seven days.

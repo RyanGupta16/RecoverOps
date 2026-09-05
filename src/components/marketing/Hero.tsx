@@ -12,7 +12,7 @@ import { LiveFeedCard, type FeedRow } from './LiveFeedCard';
  */
 const HERO_FACTS = [
   { label: 'Pipeline layers', value: '7' },
-  { label: 'Policy rules enforced', value: '12' },
+  { label: 'Policy rules enforced', value: '29' },
   { label: 'Evaluation batch', value: '500 events' },
 ];
 

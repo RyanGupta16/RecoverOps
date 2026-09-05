@@ -51,6 +51,8 @@ SUITES = [
     ("test_outcome_attribution.py", "Outcome attribution",
      "how a decision becomes a measured result, and how it fails safely"),
     ("test_policy.py", "Policy gate behaviour", "the ordered rule set on clean cases"),
+    ("test_frontend_policy_parity.py", "Policy shown = policy enforced",
+     "the website's rule table against the gate's actual rules"),
     ("test_engine.py", "Engine", "synthetic and real batches, end to end"),
     ("test_learning.py", "Learning loop", "control arm, known propensities, honest intervals"),
     ("test_degradation.py", "Degradation detection", "downtime feed and changepoint detector"),
@@ -74,6 +76,7 @@ PROPERTIES = [
     "A refused Razorpay call degrades to a labelled mock; the batch survives",
     "The same seed reproduces the same batch, decision for decision",
     "An unparseable upload yields no leaks rather than plausible-but-wrong ones",
+    "Every rule the website shows is a rule the gate actually enforces, in order",
 ]
 
 LIVE_PROPERTIES = [

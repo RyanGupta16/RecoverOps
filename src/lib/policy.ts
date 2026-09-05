@@ -19,7 +19,8 @@ export interface PolicyRule {
 export const POLICY_RULES: PolicyRule[] = [
   {
     id: 'NO_RETRY_ON_FRAUD',
-    description: 'Hard block on suspected-fraud and risk-hold reason codes. Never retried, never contacted.',
+    description:
+      'Hard block on suspected-fraud and risk-hold reason codes. Never retried, never contacted.',
     category: 'risk',
   },
   {
@@ -32,6 +33,20 @@ export const POLICY_RULES: PolicyRule[] = [
   {
     id: 'STOP_ON_DISPUTE',
     description: 'No action of any kind while a dispute or chargeback is open on the counterparty.',
+    category: 'risk',
+  },
+  {
+    id: 'PTP_ACTIVE_HOLD',
+    description:
+      'While a promise to pay is live, nothing happens on that counterparty — not outreach, not a silent retry. The agreed date is the agreement.',
+    citation: 'RBI recovery-agent norms',
+    category: 'risk',
+  },
+  {
+    id: 'DEGRADATION_HOLD',
+    description:
+      'No customer-facing action on an instrument inside a live degradation cohort — declared by Razorpay’s downtime feed or detected in our own success rate. Auto-releases when it clears.',
+    citation: 'Razorpay payment downtime feed',
     category: 'risk',
   },
   {
@@ -51,7 +66,7 @@ export const POLICY_RULES: PolicyRule[] = [
     id: 'MIXED_CONTENT_IS_PROMOTIONAL',
     description:
       'Any incentive, discount or win-back offer reclassifies the whole message as promotional and re-gates it.',
-    citation: 'TCCCPR 2025 cl. 2(au)',
+    citation: 'TCCCPR 2025 cl. 2(au) proviso',
     category: 'compliance',
   },
   {
@@ -78,7 +93,14 @@ export const POLICY_RULES: PolicyRule[] = [
     id: 'CONSENT_PURPOSE_MATCH',
     description:
       'Promotional outreach needs a consent record whose purpose covers it; explicit consent given to complete a purchase expires after seven days.',
-    citation: 'DPDP Rules 2025 · TCCCPR 2025',
+    citation: 'DPDP Rules 2025 · TCCCPR 2025 cl. 2(bh)',
+    category: 'compliance',
+  },
+  {
+    id: 'NO_THIRD_PARTY_CONTACT',
+    description:
+      'Only the counterparty or a guarantor may be contacted about dues — never a relative, colleague or reference.',
+    citation: 'RBI recovery-agent norms',
     category: 'compliance',
   },
   {
@@ -89,6 +111,20 @@ export const POLICY_RULES: PolicyRule[] = [
     category: 'frequency',
   },
   {
+    id: 'MANDATE_EXECUTION_WINDOW',
+    description:
+      'UPI Autopay executions run in NPCI’s non-peak windows — before 10:00, 13:00–17:00, or after 21:30 IST — not whenever the scheduler feels like it.',
+    citation: 'NPCI execution windows',
+    category: 'frequency',
+  },
+  {
+    id: 'PRE_DEBIT_NOTICE_24H',
+    description:
+      'A recurring debit needs a pre-debit notification to the customer at least 24 hours beforehand.',
+    citation: 'RBI E-Mandate Framework 2026',
+    category: 'compliance',
+  },
+  {
     id: 'AFA_THRESHOLD',
     description:
       'A recurring debit above the AFA-free ceiling (₹15,000; ₹1,00,000 for mutual funds, insurance and card bills) cannot be retried silently — it needs the customer’s authentication.',
@@ -97,12 +133,14 @@ export const POLICY_RULES: PolicyRule[] = [
   },
   {
     id: 'MAX_RETRY_3_PER_CYCLE',
-    description: 'Max 3 charge attempts per billing cycle on cards, mirroring Razorpay’s own T+3 behaviour.',
+    description:
+      'Max 3 charge attempts per billing cycle on cards, mirroring Razorpay’s own T+3 behaviour.',
     category: 'frequency',
   },
   {
     id: 'NETWORK_RETRY_CAP_30D',
-    description: 'Respect the card network’s rolling 30-day reattempt ceiling: 15 on Visa, 10 on Mastercard.',
+    description:
+      'Respect the card network’s rolling 30-day reattempt ceiling: 15 on Visa, 10 on Mastercard.',
     citation: 'Visa / Mastercard',
     category: 'frequency',
   },
@@ -118,10 +156,31 @@ export const POLICY_RULES: PolicyRule[] = [
     category: 'frequency',
   },
   {
+    id: 'VOICE_FREQ_3D_8W',
+    description:
+      'Voice calls are capped harder than messages: at most 3 in a day and 8 in a week to one subscriber.',
+    citation: 'TRAI promotional-call guidance',
+    category: 'frequency',
+  },
+  {
     id: 'BACKOFF_ON_ISSUER_DOWN',
     description:
       'For bank, gateway or network-side failures: exponential backoff, zero customer contact.',
     category: 'risk',
+  },
+  {
+    id: 'VOICE_ELIGIBILITY',
+    description:
+      'A voice call needs the right number series for its class (140 promotional, 1600 service/transactional), a recording disclosure, text channels already tried, and a value that justifies the cost.',
+    citation: 'TRAI auto-dialler / robocall series',
+    category: 'risk',
+  },
+  {
+    id: 'MSMED_LEVER_AFTER_STATUTORY_WINDOW',
+    description:
+      'A statutory interest notice may only be sent after the MSMED payment window has lapsed (15 days without a written agreement, 45 with one) and only when the supplier is a registered micro or small enterprise.',
+    citation: 'MSMED Act 2006 s.15–16 · IT Act s.43B(h)',
+    category: 'compliance',
   },
   {
     id: 'DISCOUNT_CAP_5PCT',

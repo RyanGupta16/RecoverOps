@@ -45,7 +45,7 @@ const TILES: Tile[] = [
   {
     glyph: '§',
     title: 'A gate that cites its rules',
-    body: 'Twelve named rules, evaluated in order. Blocks carry the rule ID and a plain-English reason, and rules after the first block are recorded as not-evaluated rather than quietly skipped.',
+    body: 'Twenty-nine named rules, eighteen of them citing the published regulation they enforce, evaluated in order. Blocks carry the rule ID and a plain-English reason, and rules after the first block are recorded as not-evaluated rather than quietly skipped.',
     span: 4,
   },
   {
