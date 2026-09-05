@@ -29,7 +29,7 @@ from .sim import Event
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-haiku-4-5-20251001"
 
-_VALID_SIDES = {"customer", "issuer", "risk"}
+_VALID_SIDES = {"customer", "issuer", "risk", "merchant"}
 
 
 class Diagnoser:
@@ -40,13 +40,14 @@ class Diagnoser:
 
     def diagnose(self, ev: Event) -> dict:
         if not ev.ambiguous:
+            via = f"Razorpay error_reason `{ev.raw_reason}` mapped to {ev.reason_code} ({ev.reason_confidence} confidence). " if ev.raw_reason else ""
             return {
                 "method": "deterministic_lookup",
                 "reasonCode": ev.reason_code,
                 "reasonLabel": ev.reason_label,
                 "failureSide": ev.failure_side,
                 "latencyMs": 0,
-                "note": "Reason code resolved from the deterministic lookup table. No model call, no latency, no cost.",
+                "note": f"{via}Resolved from the deterministic lookup table. No model call, no latency, no cost.",
             }
 
         cached = self._cache.get(ev.reason_code)
@@ -77,11 +78,13 @@ class Diagnoser:
             }
 
         prompt = (
-            "A recurring payment failed. Gateway returned an ambiguous decline.\n"
-            f"Reason code: {ev.reason_code}\nDescription: {ev.reason_label}\n"
+            "A payment failed. Gateway returned an ambiguous decline.\n"
+            f"Reason family: {ev.reason_code}\nDescription: {ev.reason_label}\n"
+            f"Razorpay error_reason: {ev.raw_reason or 'n/a'}; error_source: {ev.raw_source or 'n/a'}; "
+            f"error_description: {ev.raw_description or 'n/a'}\n"
             f"Method: {ev.method}. Amount: ₹{ev.amount_paise / 100:.2f}.\n\n"
             f"Documented codes (retrieved):\n{context}\n\n"
-            'Classify the failure side. Reply with JSON only: {"failure_side": "customer"|"issuer"|"risk", "rationale": "<one sentence>"}'
+            'Classify the failure side. Reply with JSON only: {"failure_side": "customer"|"issuer"|"risk"|"merchant", "rationale": "<one sentence>"}'
         )
         t0 = time.perf_counter()
         try:

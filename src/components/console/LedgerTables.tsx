@@ -53,11 +53,16 @@ export function SleepingDogTable({ rows }: { rows: SleepingDogRecord[] }) {
     {
       key: 'truth',
       header: 'True segment',
-      render: (r) => (
-        <span className={r.truthSegment === 'sleeping_dog' ? 'text-amber' : 'text-ink-mute'}>
-          {SEGMENT_LABELS[r.truthSegment]}
-        </span>
-      ),
+      render: (r) =>
+        r.truthSegment ? (
+          <span className={r.truthSegment === 'sleeping_dog' ? 'text-amber' : 'text-ink-mute'}>
+            {SEGMENT_LABELS[r.truthSegment]}
+          </span>
+        ) : (
+          <span className="text-ink-mute" title="Real data: segment membership is never observed.">
+            unknown
+          </span>
+        ),
     },
     {
       key: 'damage',
@@ -65,7 +70,10 @@ export function SleepingDogTable({ rows }: { rows: SleepingDogRecord[] }) {
       numeric: true,
       render: (r) =>
         r.estimatedDamageAvoidedPaise > 0 ? (
-          <span className="text-amber">{rupees(r.estimatedDamageAvoidedPaise)}</span>
+          <span className="text-amber">
+            {rupees(r.estimatedDamageAvoidedPaise)}
+            {r.churnDeltaIsEstimate && <span className="ml-1 text-[9.5px] text-ink-mute">est.</span>}
+          </span>
         ) : (
           <span className="text-ink-mute">—</span>
         ),
@@ -117,6 +125,16 @@ export function ExceptionTable({ rows }: { rows: ExceptionRecord[] }) {
       key: 'rule',
       header: 'Blocked by',
       render: (r) => <span className="text-[var(--color-verdict-block)]">{r.blockedBy}</span>,
+    },
+    {
+      key: 'queue',
+      header: 'Queue',
+      render: (r) =>
+        r.queue === 'merchant_ops' ? (
+          <span className="text-brass">merchant ops</span>
+        ) : (
+          <span className="text-ink-mute">human</span>
+        ),
     },
     {
       key: 'why',

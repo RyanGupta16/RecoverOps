@@ -78,6 +78,26 @@ Every console page asks the backend first and falls back to the bundled syntheti
 served from `/api/sample/*` route handlers so the 800 KB dataset never enters the client
 bundle. The badge on each page says which one answered.
 
+### Real data
+
+The console's batch runner has a source selector: **Simulator** (seeded, both branches
+known), **Razorpay account** (pulls failed payments and pending/halted subscriptions from
+your account on the test-mode keys in `backend/.env`), or an **uploaded file** — a Razorpay
+payments export as API JSON (`{"items": [...]}`) or the dashboard CSV. Every real payment's
+`error_reason` maps onto one of thirteen reason families (`backend/app/taxonomy.py`),
+including three a toy simulator never needs: `CUSTOMER_CANCELLED`, `INSTRUMENT_BLOCKED`
+(never retried on the same instrument) and `MERCHANT_CONFIG` (`error_source = business` —
+zero customer contact, routed to merchant operations). Those are deterministic from the
+reason string, so the gate is correct on them from the first real event.
+
+On real data the ranking runs on reason-family priors until the learning loop has real
+outcomes to retrain on, and the batch says so (`dataMode: real`, `estimatorMode: priors`).
+Engagement and tenure are proxies estimated from the pulled history and are labelled as
+such in every trace. Raw contact details never enter the ledger — only a hash.
+
+`backend/merchant.toml` is the onboarding config: budget, thresholds, which channels are
+real, message costs by class, contact windows, MSME status, AFA category.
+
 ### The ledger
 
 Everything a batch produces is persisted in `backend/data/ledger.db` (SQLite, WAL mode,
@@ -104,7 +124,7 @@ Backend tests: `cd backend && .venv/bin/python -m pytest tests -q`.
 | ---------------- | --------------------------------------------------------------------- |
 | `npm run dev`    | dev server                                                            |
 | `npm run build`  | production build                                                      |
-| `npm run gen`    | regenerate `data/sample-batch.json` and `data/sample-traces.json`      |
+| `npm run gen`    | regenerate the bundled demo batch from the real engine (`python -m app.export_sample`) |
 | `npm run frames` | re-extract the background frame sequence from `assets/`               |
 | `npm run lint`   | eslint                                                                |
 | `npm run format` | prettier                                                              |
@@ -116,27 +136,37 @@ them and not contact them and compare. You can only ever do one. That is the fun
 problem of causal inference, not a gap in anyone's engineering — a live system never sees
 the branch it didn't take.
 
-So the batch is generated with both branches known (`scripts/generate-sample-batch.mjs`,
-seeded, byte-identical on every run). That makes the comparison in the console *exact*
-rather than estimated. It also means these are not measurements taken on real customers,
-and the site says so everywhere it shows a number.
+So the bundled batch is generated with both branches known — by the same engine, gate and
+estimators that run live, with a fixed seed (`python -m app.export_sample`), so it is
+byte-identical on every run and there is no second implementation of anything. That makes
+the comparison in the console *exact* rather than estimated. It also means these are not
+measurements taken on real customers, and the site says so everywhere it shows a number.
+
+Real data goes through the identical pipeline (see *Real data* above); on it, no outcome is
+known at decision time and every recovered/churned figure reads as pending until the
+learning loop attributes it.
 
 What's real: the policy rules and the regulation they cite, the seven-layer pipeline they
 gate, and the Razorpay test-mode API calls made by the backend executor.
 
 Both agents in the comparison get the same events, the same contact budget and the same
-twelve-rule policy gate. The baseline is not built to lose — it only ranks by a different
-objective.
+policy gate. The baseline is not built to lose — it only ranks by a different objective.
 
 The estimators are honest about what is knowable. Segment membership is latent given the
 observable features: a sleeping dog and a persuadable with the same reason code and
 engagement are indistinguishable to any estimator, and the Bayes-optimal ranking on this
 world (measured — posterior over segments × exact per-segment effects) still touches
-roughly seven sleeping dogs per 500-event batch. The demo generator simulates its
-estimators at that same posterior ceiling plus noise rather than handing the agent an
-oracle, so the bundled numbers and a live batch tell the same story. What uplift ranking
-buys robustly is where the budget goes — persuadables over sure things — and a
-churn-priced value estimate that declines the clearly dangerous contacts.
+roughly seven sleeping dogs per 500-event batch. The one feature that separates a dog from
+a persuadable is the customer's response the last time they were chased — the signal a
+merchant's own dunning history carries. The simulated world includes it as an informative
+but noisy history (`prior_nudge_response`), and the batch's honesty block says so; on real
+data that feature is `none` until the learning loop has seen outcomes, which is exactly why
+the loop exists. Without it the estimators barely beat the priors (Qini 0.164 vs 0.160) and
+the comparison collapses to parity; with it the X-learner wins clearly (0.187 vs 0.151).
+What uplift ranking buys robustly is where the budget goes — persuadables over sure things
+— and a churn-priced value estimate that declines the clearly dangerous contacts. The
+budget also has to bind: with a generous budget both policies contact everyone the gate
+allows, so `merchant.toml` sets it at 120 per 500-event batch.
 
 ## Architecture
 

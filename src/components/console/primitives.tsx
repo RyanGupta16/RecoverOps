@@ -81,12 +81,15 @@ export function MonoDataTable<T>({
   const { root } = useAnimeScope(
     (self, host) => {
       const { reduceMotion } = self.matches;
+      // The whole cascade finishes inside ~1.5 s however many rows there are:
+      // a 500-row ledger at a fixed 14 ms per row would leave its tail invisible
+      // for seven seconds, which reads as rows that never loaded.
+      const perRow = Math.min(14, 1500 / Math.max(rows.length, 1));
       animate('[data-tr]', {
         opacity: [0, 1],
         translateY: reduceMotion ? 0 : [8, 0],
         duration: reduceMotion ? 1 : 420,
-        // Capped so a 500-row table does not schedule a two-minute cascade.
-        delay: stagger(reduceMotion ? 0 : 14, { from: 0 }),
+        delay: stagger(reduceMotion ? 0 : perRow, { from: 0 }),
         ease: BRAND_EASE,
         autoplay: onScroll({ ...REVEAL_TRIGGER, target: host }),
       });

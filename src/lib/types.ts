@@ -6,12 +6,30 @@ export type Segment = 'sure_thing' | 'persuadable' | 'lost_cause' | 'sleeping_do
 
 export type Verdict = 'PASS' | 'BLOCK' | 'N/A';
 
-export type MessageClass = 'transactional' | 'promotional';
+/** TCCCPR 2025 three-class model. `null` when the action carries no message. */
+export type MessageClass = 'transactional' | 'service' | 'promotional';
+
+export type FailureSide = 'customer' | 'issuer' | 'risk' | 'merchant';
+
+/** Where a batch's leaks came from. */
+export type LeakSourceName = 'simulator' | 'razorpay' | 'file';
+
+/** Synthetic batches know both branches; real ones know neither until outcomes arrive. */
+export type DataMode = 'synthetic' | 'real';
+
+export type LeakKind =
+  | 'subscription_failure'
+  | 'mandate_failure'
+  | 'checkout_abandonment'
+  | 'receivable_overdue'
+  | 'degradation_cohort';
 
 export interface GateResult {
   ruleId: string;
   verdict: Verdict;
   note: string;
+  /** Regulation the rule enforces; null for product policy. */
+  citation?: string | null;
 }
 
 export interface AgentMetrics {
@@ -35,6 +53,10 @@ export interface AgentMetrics {
   churnedSubscriptions: number;
   contactCostPaise: number;
   netValuePaise: number;
+  /** Real data: events whose outcome is not yet known. Zero on synthetic batches. */
+  outcomesPending?: number;
+  /** Events assigned to the randomised control arm (silent path for both agents). */
+  holdoutEvents?: number;
 }
 
 export interface CurvePoint {
@@ -66,8 +88,9 @@ export interface EventDecision {
   action: string;
   label: string;
   contacted: boolean;
-  recovered: boolean;
-  churned: boolean;
+  /** null while the outcome is unknown (real data, before attribution). */
+  recovered: boolean | null;
+  churned: boolean | null;
   /** Rule that stopped the action finally taken. */
   blockedBy?: string | null;
   /** Rule that stopped what the agent wanted to do first. */
@@ -77,6 +100,8 @@ export interface EventDecision {
 
 export interface BatchEvent {
   eventId: string;
+  kind?: LeakKind;
+  source?: LeakSourceName;
   paymentId: string;
   subscriptionId: string;
   failedAt: string;
@@ -84,16 +109,21 @@ export interface BatchEvent {
   planName: string;
   method: string;
   issuer: string;
+  network?: string | null;
   reasonCode: string;
   reasonLabel: string;
-  failureSide: 'customer' | 'issuer' | 'risk';
+  /** Razorpay's error_reason as received, when the leak came from real data. */
+  rawReason?: string | null;
+  failureSide: FailureSide;
   minutesSinceFailure: number;
-  messageClass: MessageClass;
+  messageClass: MessageClass | null;
   upliftHat: number;
   baselineScore: number;
+  holdout?: boolean;
   agentA: EventDecision;
   agentB: EventDecision;
-  truthSegment: Segment;
+  /** null on real data — segment membership is never observed. */
+  truthSegment: Segment | null;
 }
 
 export interface SleepingDogRecord {
@@ -107,8 +137,10 @@ export interface SleepingDogRecord {
   decisionLabel: string;
   blockedBy: string;
   baselineWouldContact: boolean;
-  truthSegment: Segment;
+  truthSegment: Segment | null;
+  /** True churn effect on synthetic data; the model's churn-uplift estimate on real data. */
   churnDelta: number;
+  churnDeltaIsEstimate?: boolean;
   estimatedDamageAvoidedPaise: number;
   engagementScore: number;
 }
@@ -126,6 +158,8 @@ export interface ExceptionRecord {
   structuredReason: string;
   attemptsThisCycle: number;
   contactsLast7d: number;
+  /** Merchant-side failures go to merchant operations, not customer-facing humans. */
+  queue?: 'human' | 'merchant_ops';
 }
 
 export interface StreamLine {
@@ -153,6 +187,13 @@ export interface BatchResult {
   label: string;
   generatedBy?: string;
   seed?: number;
+  /** Absent on batches stored before v2; treat as synthetic. */
+  dataMode?: DataMode;
+  sourceName?: LeakSourceName;
+  sourceMeta?: Record<string, unknown>;
+  merchant?: string;
+  /** 'learned' — trained CATE estimator; 'priors' — reason-family priors (real data before the learning loop). */
+  estimatorMode?: 'learned' | 'priors';
   honesty: {
     whatIsSynthetic: string;
     whatIsReal: string;
@@ -187,10 +228,52 @@ export interface ActionEstimate {
   estimatedUplift: number;
   expectedValuePaise: number;
   eligible: boolean;
+  messageClass?: MessageClass | null;
+  costPaise?: number;
 }
+
+/** The leak as the pipeline saw it — no raw contact details, only a hash. */
+export interface LeakRow {
+  eventId: string;
+  kind: LeakKind;
+  source: LeakSourceName;
+  paymentId: string;
+  subscriptionId: string;
+  invoiceId: string | null;
+  customerId: string;
+  counterpartyType: 'consumer' | 'business';
+  contactHash: string | null;
+  failedAt: string;
+  amountPaise: number;
+  planName: string;
+  method: string;
+  issuer: string;
+  network: string | null;
+  psp: string | null;
+  reasonCode: string;
+  reasonLabel: string;
+  failureSide: FailureSide;
+  rawReason: string | null;
+  reasonConfidence: 'high' | 'medium' | 'low';
+  hardDecline: boolean;
+  merchantSide: boolean;
+  minutesSinceFailure: number;
+  attemptsThisCycle: number;
+  contactsLast7d: number;
+  retries30d: number;
+  featuresAreProxies: boolean;
+  holdout: boolean;
+  synthetic: boolean;
+}
+
+export type Outcome = { recovered: boolean; churned: boolean } | null;
 
 export interface DecisionTrace {
   eventId: string;
+  kind?: LeakKind;
+  source?: LeakSourceName;
+  dataMode?: DataMode;
+  leak?: LeakRow;
   diagnosis: {
     method: 'deterministic_lookup' | 'llm_fallback';
     reasonCode: string;
@@ -202,35 +285,73 @@ export interface DecisionTrace {
   precedents: Precedent[];
   uplift: {
     estimator: string;
+    estimatorMode?: 'learned' | 'priors';
     pControlHat: number;
     pTreatHat: number;
     upliftHat: number;
+    churnUpliftHat?: number;
     perAction: ActionEstimate[];
   };
   agentB: {
     chosenAction: string;
     chosenLabel: string;
-    messageClass: MessageClass;
+    messageClass: MessageClass | null;
     gate: GateResult[];
     blockedBy: string | null;
     deniedAction: string | null;
     deniedBy: string | null;
     execution: { mode: string; detail: string; mocked: boolean };
-    outcome: { recovered: boolean; churned: boolean };
+    outcome: Outcome;
+    costPaise?: number;
   };
   agentA: {
     chosenAction: string;
     chosenLabel: string;
     score: number;
-    outcome: { recovered: boolean; churned: boolean };
+    outcome: Outcome;
   };
+  /** null on real data — the branch not taken is unobserved. */
   truth: {
     segment: Segment;
     pControl: number;
     pTreat: number;
     churnControl: number;
     churnTreat: number;
-  };
+  } | null;
+}
+
+/** GET /api/sources */
+export interface LeakSourceInfo {
+  name: LeakSourceName;
+  available: boolean;
+  dataMode: DataMode;
+  note: string;
+  files?: FileIngestMeta[];
+}
+
+/** POST /api/ingest/file and the entries under a file source. */
+export interface FileIngestMeta {
+  fileId: string;
+  filename: string;
+  uploadedAt: string;
+  rows: number;
+  failedRows: number;
+  warnings: string[];
+  leaks: number;
+  amountPaise: number;
+  byFamily: Record<string, number>;
+  byMethod: Record<string, number>;
+  byKind: Record<string, number>;
+  lowConfidence: number;
+}
+
+export interface RunBatchOptions {
+  source?: LeakSourceName;
+  seed?: number;
+  count?: number;
+  fileId?: string;
+  days?: number;
+  limit?: number;
 }
 
 /** The slim per-agent figures the history list shows. Mirrors Store.summarize in the backend. */
@@ -242,6 +363,7 @@ export interface AgentSummaryMetrics {
   wastedContacts: number;
   escalations: number;
   recoveryRate: number;
+  outcomesPending?: number;
 }
 
 /** One row of batch history — GET /api/batches. */
@@ -253,6 +375,8 @@ export interface BatchSummary {
   eventCount: number;
   generatedBy?: string | null;
   createdAt: string;
+  dataMode?: DataMode;
+  sourceName?: LeakSourceName;
   agents: { A: AgentSummaryMetrics; B: AgentSummaryMetrics };
   sleepingDogs: number;
   exceptions: number;

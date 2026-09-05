@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "gen": "node scripts/generate-sample-batch.mjs",
+    "gen": "cd backend && .venv/bin/python -m app.export_sample",
     "frames": "swift scripts/extract-frames.swift assets/agent-background.mp4 public/frames 110 840 0.36",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"scripts/*.mjs\"",
     "smoke": "node scripts/smoke.mjs"

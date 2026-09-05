@@ -1,15 +1,24 @@
 import { Reveal } from '@/components/motion/Reveal';
 import { GlassCard, Section, SectionHead } from '@/components/ui/primitives';
+import { POLICY_RULES } from '@/lib/policy';
 import { PolicyTable } from './PolicyTable';
 
+const RULE_COUNT_WORDS: Record<number, string> = {
+  12: 'Twelve',
+  20: 'Twenty',
+  21: 'Twenty-one',
+  22: 'Twenty-two',
+};
+
 export function PolicySection() {
+  const count = RULE_COUNT_WORDS[POLICY_RULES.length] ?? String(POLICY_RULES.length);
   return (
     <Section id="policy" tone="grounded">
       <SectionHead
         eyebrow="Policy & compliance"
         title={
           <>
-            Twelve rules the engine
+            {count} rules the engine
             <br />
             cannot argue with.
           </>
@@ -26,21 +35,23 @@ export function PolicySection() {
       <Reveal className="mt-8 grid gap-5 lg:grid-cols-[1.1fr_1fr]" variant="fade-up">
         <div className="rounded-[var(--radius-card)] border border-amber/30 bg-amber/[0.06] p-6 md:p-7">
           <h3 className="display text-[22px] text-ink">
-            The thirty-minute line most systems never draw
+            Three classes of message, and the line most systems never draw
           </h3>
           <p className="mt-3.5 text-[14px] leading-[1.66] text-ink-dim">
-            Under India&rsquo;s TCCCPR framework, a payment-retry message sent within 30 minutes of
-            the failed attempt qualifies as transactional. The identical message, to the identical
-            customer, sent days later does not — it becomes promotional-class, and the rules change
-            underneath it. Promotional messages need a consent record, need DND scrubbing, and are
-            confined to 09:00–21:00 IST. Consent validity is capped at seven days under the
-            amendment.
+            Under TRAI&rsquo;s TCCCPR amendment of February 2025, a message is{' '}
+            <em>transactional</em> only if it answers a customer-initiated transaction within
+            thirty minutes. A recurring charge is merchant-initiated, so a failed-subscription notice
+            is never transactional — it is a <em>service</em> message about a product the customer
+            holds: no explicit consent, no time band. Put an incentive in it and the whole message
+            becomes <em>promotional</em>: consent record, DND scrub, 09:00–21:00 IST, and consent
+            given to complete a purchase expires after seven days.
           </p>
           <p className="mt-3.5 text-[14px] leading-[1.66] text-ink-dim">
-            So the clock is not a detail of delivery. It changes what the message legally is. A
-            dunning system that schedules a &ldquo;reminder&rdquo; for T+3 without reclassifying it
-            has quietly moved into a different regulatory category. RecoverOps re-gates on elapsed
-            time and records the classification on every decision.
+            So the content and the clock are not details of delivery. They change what the message
+            legally is. A dunning system that adds a &ldquo;10% off if you pay today&rdquo; to a
+            reminder has quietly moved into a different regulatory category. RecoverOps classifies
+            every message before it gates it, and records the class — and the clause — on every
+            decision.
           </p>
         </div>
 

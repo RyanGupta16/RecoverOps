@@ -5,6 +5,9 @@ import type {
   BatchSummary,
   DecisionTrace,
   ExceptionRecord,
+  FileIngestMeta,
+  LeakSourceInfo,
+  RunBatchOptions,
   SleepingDogRecord,
   Sourced,
 } from './types';
@@ -79,26 +82,62 @@ export async function fetchAuditTail(limit = 50): Promise<{ rows: AuditEntry[]; 
   return backend<{ rows: AuditEntry[]; total: number }>(`/api/audit?limit=${limit}`);
 }
 
-export async function startBatchRun(): Promise<{ batchId: string; source: 'live' | 'sample' }> {
+/** Real pulls can take a while (paginated API calls); the simulator is ~300 ms. */
+const RUN_TIMEOUT_MS = 90_000;
+
+export type RunOutcome =
+  | { ok: true; batchId: string; source: 'live'; eventCount?: number; dataMode?: string }
+  | { ok: false; source: 'sample'; batchId: string; error?: string };
+
+/**
+ * Starts a batch on the backend. Falls back to the sample replay only when the
+ * backend is unreachable; a backend that answers with an error (no keys, empty
+ * pull, bad file) is reported as an error, not silently replaced with demo data.
+ */
+export async function startBatchRun(opts: RunBatchOptions = {}): Promise<RunOutcome> {
+  if (!HAS_BACKEND) return { ok: false, source: 'sample', batchId: 'bat_sample_20260903' };
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), RUN_TIMEOUT_MS);
     const res = await fetch(`${API_URL}/api/batch/run`, {
       method: 'POST',
       signal: controller.signal,
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(opts),
     });
     clearTimeout(timer);
-    if (res.ok) {
-      const json = (await res.json()) as { batchId?: string; batch_id?: string };
-      const batchId = json.batchId ?? json.batch_id;
-      if (batchId) return { batchId, source: 'live' };
+    const json = (await res.json().catch(() => ({}))) as {
+      batchId?: string;
+      eventCount?: number;
+      dataMode?: string;
+      detail?: string;
+    };
+    if (res.ok && json.batchId) {
+      return { ok: true, batchId: json.batchId, source: 'live', eventCount: json.eventCount, dataMode: json.dataMode };
     }
+    return {
+      ok: false,
+      source: 'sample',
+      batchId: 'bat_sample_20260903',
+      error: json.detail ?? `Backend answered ${res.status}.`,
+    };
   } catch {
-    /* falls through to the sample replay */
+    return { ok: false, source: 'sample', batchId: 'bat_sample_20260903' };
   }
-  return { batchId: 'bat_sample_20260903', source: 'sample' };
+}
+
+export async function fetchSources(): Promise<LeakSourceInfo[]> {
+  return (await backend<LeakSourceInfo[]>('/api/sources')) ?? [];
+}
+
+/** Uploads a Razorpay payments export; the backend answers with what it found in it. */
+export async function uploadIngestFile(file: File): Promise<FileIngestMeta> {
+  const body = new FormData();
+  body.append('file', file);
+  const res = await fetch(`${API_URL}/api/ingest/file`, { method: 'POST', body });
+  const json = (await res.json().catch(() => ({}))) as FileIngestMeta & { detail?: string };
+  if (!res.ok) throw new Error(json.detail ?? `Upload failed (${res.status}).`);
+  return json;
 }
 
 export async function fetchTrace(eventId: string): Promise<Sourced<DecisionTrace> | null> {

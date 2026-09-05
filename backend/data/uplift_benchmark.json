@@ -1,31 +1,32 @@
 {
   "train_n": 100000,
   "holdout_n": 20000,
+  "feature_version": 3,
   "estimators": {
     "t_learner": {
-      "pehe": 0.19278,
-      "qini": 0.16863,
-      "corr_with_truth": 0.5001
+      "pehe": 0.1737,
+      "qini": 0.18397,
+      "corr_with_truth": 0.6116
     },
     "s_learner": {
-      "pehe": 0.19162,
-      "qini": 0.17098,
-      "corr_with_truth": 0.5105
+      "pehe": 0.17304,
+      "qini": 0.18518,
+      "corr_with_truth": 0.6154
     },
     "x_learner": {
-      "pehe": 0.19169,
-      "qini": 0.17123,
-      "corr_with_truth": 0.5112
+      "pehe": 0.17206,
+      "qini": 0.18668,
+      "corr_with_truth": 0.6214
     },
     "dr_learner": {
-      "pehe": 0.19305,
-      "qini": 0.16696,
-      "corr_with_truth": 0.4987
+      "pehe": 0.17373,
+      "qini": 0.18378,
+      "corr_with_truth": 0.6109
     },
     "segment_priors": {
-      "pehe": 0.19835,
-      "qini": 0.16696,
-      "corr_with_truth": 0.4935
+      "pehe": 0.19686,
+      "qini": 0.15149,
+      "corr_with_truth": 0.4777
     }
   },
   "winner": "x_learner",

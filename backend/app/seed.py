@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     rt = Runtime.build()
     for i in range(args.batches):
         seed = None if args.seed is None else args.seed + i
-        summary = rt.run_and_store(seed=seed)
+        summary = rt.run_and_store("simulator", seed=seed)
         b = summary["agents"]["B"]
         print(
             f"{summary['batchId']}  seed={summary['seed']}  events={summary['eventCount']}  "

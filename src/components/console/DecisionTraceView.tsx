@@ -4,8 +4,13 @@ import { animate, onScroll, stagger } from 'animejs';
 import { BRAND_EASE, REVEAL_TRIGGER, useAnimeScope } from '@/components/motion/useAnimeScope';
 import { DemoModeBadge } from '@/components/ui/primitives';
 import { rupeesPrecise, SEGMENT_LABELS, signed } from '@/lib/format';
-import type { DataSource, DecisionTrace } from '@/lib/types';
+import type { DataSource, DecisionTrace, Outcome } from '@/lib/types';
 import { RuleVerdictBadge, TerminalPanel } from './primitives';
+
+function outcomeWord(o: Outcome): string {
+  if (o === null) return 'pending';
+  return o.recovered ? 'recovered' : o.churned ? 'cancelled' : 'unresolved';
+}
 
 export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; source: DataSource }) {
   const { root } = useAnimeScope((self, host) => {
@@ -30,24 +35,49 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
     });
   });
 
-  const { diagnosis, precedents, uplift, agentB, agentA, truth } = trace;
+  const { diagnosis, precedents, uplift, agentB, agentA, truth, leak } = trace;
+  const real = trace.dataMode === 'real';
   const maxAbsEv = Math.max(...uplift.perAction.map((p) => Math.abs(p.expectedValuePaise)), 1);
 
   return (
     <div ref={root} className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-3">
         <DemoModeBadge source={source} />
+        {real ? (
+          <span className="inline-flex items-center gap-2 rounded-full border border-brass/50 bg-brass/[0.12] px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-brass">
+            <span className="size-1.5 rounded-full bg-brass" />
+            Real data · {trace.source} · outcome pending
+          </span>
+        ) : (
+          <span className="font-mono text-[11px] text-ink-mute">
+            synthetic · both branches known
+          </span>
+        )}
         <span className="font-mono text-[11px] text-ink-mute">
           estimator: <span className="text-brass">{uplift.estimator}</span>
         </span>
+        {trace.kind && (
+          <span className="font-mono text-[11px] text-ink-mute">
+            leak: <span className="text-ink-dim">{trace.kind.replace(/_/g, ' ')}</span>
+          </span>
+        )}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
         <div data-stage className="reveal-init">
           <TerminalPanel title="01 · Diagnosis" meta={diagnosis.method.replace('_', ' ')}>
             <dl className="grid grid-cols-[110px_1fr] gap-x-4 gap-y-2 font-mono text-[11.5px]">
-              <dt className="text-ink-mute">reason_code</dt>
+              <dt className="text-ink-mute">reason_family</dt>
               <dd className="text-amber">{diagnosis.reasonCode}</dd>
+              {leak?.rawReason && (
+                <>
+                  <dt className="text-ink-mute">error_reason</dt>
+                  <dd className="text-ink-dim">
+                    {leak.rawReason}
+                    <span className="ml-2 text-ink-mute">· {leak.reasonConfidence} confidence</span>
+                  </dd>
+                </>
+              )}
               <dt className="text-ink-mute">description</dt>
               <dd className="text-ink-dim">{diagnosis.reasonLabel}</dd>
               <dt className="text-ink-mute">attributed</dt>
@@ -92,7 +122,9 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
       <div data-stage className="reveal-init">
         <TerminalPanel
           title="03 · Uplift engine"
-          meta={`p(recover | quiet) ${uplift.pControlHat.toFixed(3)} · p(recover | contact) ${uplift.pTreatHat.toFixed(3)}`}
+          meta={`p(recover | quiet) ${uplift.pControlHat.toFixed(3)} · p(recover | contact) ${uplift.pTreatHat.toFixed(3)}${
+            uplift.churnUpliftHat != null ? ` · churn uplift ${signed(uplift.churnUpliftHat)}` : ''
+          }`}
         >
           <div className="mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-2">
             <div>
@@ -108,8 +140,9 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
               </p>
             </div>
             <p className="max-w-[520px] text-[11.5px] leading-relaxed text-ink-mute">
-              The difference between the two branch estimates. Positive means contact helps;
-              negative means contact costs you the payment and, often, the subscription.
+              {uplift.estimatorMode === 'priors'
+                ? 'From reason-family priors. No model has seen this customer: on real data the estimator earns the right to rank only after the holdout has measured real outcomes.'
+                : 'The difference between the two branch estimates. Positive means contact helps; negative means contact costs you the payment and, often, the subscription.'}
             </p>
           </div>
 
@@ -132,6 +165,12 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
                     }`}
                   >
                     {action.label}
+                    {action.messageClass && (
+                      <span className="ml-1.5 text-[9.5px] uppercase tracking-[0.08em] text-ink-mute">
+                        {action.messageClass}
+                        {action.costPaise != null && ` · ${rupeesPrecise(action.costPaise)}`}
+                      </span>
+                    )}
                   </span>
                   {/* Explicit placement: auto-flow would push the value onto a
                       third row once the bar spans the full width on mobile. */}
@@ -159,7 +198,8 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
             })}
           </ul>
           <p className="mt-3 border-t border-hairline pt-3 font-mono text-[10.5px] text-ink-mute">
-            Expected value = estimated uplift × amount − contact cost. Ineligible actions dimmed.
+            Expected value = uplift × amount − churn uplift × amount × residual cycles − channel cost
+            at the message class the gate assigns. Ineligible actions dimmed.
           </p>
         </TerminalPanel>
       </div>
@@ -167,7 +207,9 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
       <div data-stage className="reveal-init">
         <TerminalPanel
           title="04 · Policy gate"
-          meta={`message class: ${agentB.messageClass}${agentB.blockedBy ? ` · blocked by ${agentB.blockedBy}` : ' · no block'}`}
+          meta={`message class: ${agentB.messageClass ?? 'none — no outbound message'}${
+            agentB.blockedBy ? ` · blocked by ${agentB.blockedBy}` : ' · no block'
+          }`}
         >
           {agentB.deniedBy && (
             <p className="mb-3 rounded border border-[var(--color-verdict-block)]/40 bg-[var(--color-verdict-block)]/[0.10] px-3 py-2 text-[11.5px] leading-snug text-ink-dim">
@@ -182,15 +224,22 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
               <li
                 key={`${rule.ruleId}-${i}`}
                 data-gate-row
-                className="reveal-init grid grid-cols-[52px_1fr] items-start gap-x-3 gap-y-1 border-b border-hairline/60 py-2 last:border-b-0 lg:grid-cols-[52px_228px_1fr]"
+                className="reveal-init grid grid-cols-[52px_1fr] items-start gap-x-3 gap-y-1 border-b border-hairline/60 py-2 last:border-b-0 lg:grid-cols-[52px_248px_1fr]"
               >
                 <RuleVerdictBadge verdict={rule.verdict} />
-                <span
-                  className={`font-mono text-[10.5px] break-all ${
-                    rule.verdict === 'BLOCK' ? 'text-[var(--color-verdict-block)]' : 'text-brass'
-                  }`}
-                >
-                  {rule.ruleId}
+                <span className="flex flex-col gap-0.5">
+                  <span
+                    className={`font-mono text-[10.5px] break-all ${
+                      rule.verdict === 'BLOCK' ? 'text-[var(--color-verdict-block)]' : 'text-brass'
+                    }`}
+                  >
+                    {rule.ruleId}
+                  </span>
+                  {rule.citation && (
+                    <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-ink-mute">
+                      {rule.citation}
+                    </span>
+                  )}
                 </span>
                 <span className="col-start-2 text-[11.5px] leading-snug text-ink-mute lg:col-start-3">
                   {rule.note}
@@ -211,73 +260,100 @@ export function DecisionTraceView({ trace, source }: { trace: DecisionTrace; sou
             <p className="mt-2 break-all font-mono text-[11px] leading-relaxed text-ink-dim">
               {agentB.execution.detail}
             </p>
+            {agentB.costPaise != null && agentB.costPaise > 0 && (
+              <p className="mt-2 font-mono text-[10.5px] text-ink-mute">
+                channel cost {rupeesPrecise(agentB.costPaise)} at {agentB.messageClass} class
+              </p>
+            )}
             {agentB.execution.mocked && (
               <p className="mt-3 rounded border border-hairline bg-ink/[0.04] px-3 py-2 text-[11px] leading-snug text-ink-mute">
-                The payment link is a real Razorpay test-mode object. The SMS or WhatsApp message
-                carrying it is not sent — outbound delivery is mocked throughout this build.
+                Razorpay objects are real test-mode objects where keys are configured. The message
+                carrying them is not sent — outbound delivery is mocked and labelled throughout.
               </p>
             )}
           </TerminalPanel>
         </div>
 
         <div data-stage className="reveal-init">
-          <TerminalPanel
-            title="06 · Outcome, and the branch we did not take"
-            meta="synthetic ground truth"
-          >
-            <dl className="grid grid-cols-[142px_1fr] gap-x-4 gap-y-2 font-mono text-[11.5px]">
-              <dt className="text-ink-mute">true_segment</dt>
-              <dd className="text-amber">{SEGMENT_LABELS[truth.segment]}</dd>
-              <dt className="text-ink-mute">p_recover_quiet</dt>
-              <dd className="text-ink-dim">{truth.pControl.toFixed(2)}</dd>
-              <dt className="text-ink-mute">p_recover_contact</dt>
-              <dd className="text-ink-dim">{truth.pTreat.toFixed(2)}</dd>
-              <dt className="text-ink-mute">p_cancel_quiet</dt>
-              <dd className="text-ink-dim">{truth.churnControl.toFixed(2)}</dd>
-              <dt className="text-ink-mute">p_cancel_contact</dt>
-              <dd
-                className={
-                  truth.churnTreat > truth.churnControl
-                    ? 'text-[var(--color-verdict-block)]'
-                    : 'text-ink-dim'
-                }
-              >
-                {truth.churnTreat.toFixed(2)}
-              </dd>
-            </dl>
+          {truth ? (
+            <TerminalPanel
+              title="06 · Outcome, and the branch we did not take"
+              meta="synthetic ground truth"
+            >
+              <dl className="grid grid-cols-[142px_1fr] gap-x-4 gap-y-2 font-mono text-[11.5px]">
+                <dt className="text-ink-mute">true_segment</dt>
+                <dd className="text-amber">{SEGMENT_LABELS[truth.segment]}</dd>
+                <dt className="text-ink-mute">p_recover_quiet</dt>
+                <dd className="text-ink-dim">{truth.pControl.toFixed(2)}</dd>
+                <dt className="text-ink-mute">p_recover_contact</dt>
+                <dd className="text-ink-dim">{truth.pTreat.toFixed(2)}</dd>
+                <dt className="text-ink-mute">p_cancel_quiet</dt>
+                <dd className="text-ink-dim">{truth.churnControl.toFixed(2)}</dd>
+                <dt className="text-ink-mute">p_cancel_contact</dt>
+                <dd
+                  className={
+                    truth.churnTreat > truth.churnControl
+                      ? 'text-[var(--color-verdict-block)]'
+                      : 'text-ink-dim'
+                  }
+                >
+                  {truth.churnTreat.toFixed(2)}
+                </dd>
+              </dl>
 
-            <div className="mt-3 grid grid-cols-2 gap-3 border-t border-hairline pt-3">
-              <div>
-                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-mute">
-                  RecoverOps
-                </p>
-                <p className="mt-1 font-mono text-[12px] text-ink">
-                  {agentB.outcome.recovered
-                    ? 'recovered'
-                    : agentB.outcome.churned
-                      ? 'cancelled'
-                      : 'unresolved'}
-                </p>
+              <div className="mt-3 grid grid-cols-2 gap-3 border-t border-hairline pt-3">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-mute">
+                    RecoverOps
+                  </p>
+                  <p className="mt-1 font-mono text-[12px] text-ink">{outcomeWord(agentB.outcome)}</p>
+                </div>
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-mute">
+                    Baseline · {agentA.chosenLabel}
+                  </p>
+                  <p className="mt-1 font-mono text-[12px] text-ink-dim">{outcomeWord(agentA.outcome)}</p>
+                </div>
               </div>
-              <div>
-                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-mute">
-                  Baseline · {agentA.chosenLabel}
-                </p>
-                <p className="mt-1 font-mono text-[12px] text-ink-dim">
-                  {agentA.outcome.recovered
-                    ? 'recovered'
-                    : agentA.outcome.churned
-                      ? 'cancelled'
-                      : 'unresolved'}
-                </p>
-              </div>
-            </div>
 
-            <p className="mt-3 border-t border-hairline pt-3 text-[11px] leading-relaxed text-ink-mute">
-              These probabilities exist because the batch is synthetic. On live traffic this panel
-              would be empty — you never observe the branch you did not take.
-            </p>
-          </TerminalPanel>
+              <p className="mt-3 border-t border-hairline pt-3 text-[11px] leading-relaxed text-ink-mute">
+                These probabilities exist because the batch is synthetic. On live traffic this panel
+                would be empty — you never observe the branch you did not take.
+              </p>
+            </TerminalPanel>
+          ) : (
+            <TerminalPanel title="06 · Outcome" meta="pending — real data">
+              <p className="text-[12px] leading-relaxed text-ink-dim">
+                No outcome is known yet. The branch not taken is never observed on real data, and
+                the branch taken has not resolved. The learning loop attributes the outcome when
+                Razorpay reports it — <span className="font-mono text-ink">subscription.charged</span>,{' '}
+                <span className="font-mono text-ink">payment_link.paid</span> — and only then does
+                this leak count toward measured recovery.
+              </p>
+              {leak && (
+                <dl className="mt-3 grid grid-cols-[142px_1fr] gap-x-4 gap-y-2 border-t border-hairline pt-3 font-mono text-[11.5px]">
+                  <dt className="text-ink-mute">baseline_action</dt>
+                  <dd className="text-ink-dim">{agentA.chosenLabel}</dd>
+                  <dt className="text-ink-mute">counterparty</dt>
+                  <dd className="text-ink-dim">
+                    {leak.customerId}
+                    {leak.contactHash && <span className="text-ink-mute"> · contact #{leak.contactHash}</span>}
+                  </dd>
+                  <dt className="text-ink-mute">history</dt>
+                  <dd className="text-ink-dim">
+                    {leak.attemptsThisCycle} attempt(s) · {leak.retries30d} in 30d · {leak.contactsLast7d}{' '}
+                    contact(s) in 7d
+                  </dd>
+                  <dt className="text-ink-mute">features</dt>
+                  <dd className={leak.featuresAreProxies ? 'text-brass' : 'text-ink-dim'}>
+                    {leak.featuresAreProxies ? 'engagement and tenure are proxies' : 'measured'}
+                  </dd>
+                  <dt className="text-ink-mute">holdout</dt>
+                  <dd className="text-ink-dim">{leak.holdout ? 'control arm — silent path only' : 'treatment arm'}</dd>
+                </dl>
+              )}
+            </TerminalPanel>
+          )}
         </div>
       </div>
     </div>

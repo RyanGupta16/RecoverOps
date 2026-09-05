@@ -29,8 +29,8 @@ export function PolicyTable() {
     <div ref={root} className="overflow-x-auto hide-scrollbar">
       <table className="w-full min-w-[680px] border-collapse text-left">
         <caption className="sr-only">
-          The twelve named policy rules, in evaluation order, with the regulation each enforces
-          where applicable.
+          The named policy rules, in evaluation order, with the regulation each enforces where
+          applicable.
         </caption>
         <thead>
           <tr className="border-b border-hairline-hi">

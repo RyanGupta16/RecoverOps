@@ -187,6 +187,7 @@ class Store:
                 "wastedContacts": m["wastedContacts"],
                 "escalations": m["escalations"],
                 "recoveryRate": m["recoveryRate"],
+                "outcomesPending": m.get("outcomesPending", 0),
             }
 
         return {
@@ -196,6 +197,8 @@ class Store:
             "seed": batch.get("seed"),
             "eventCount": batch["eventCount"],
             "generatedBy": batch.get("generatedBy"),
+            "dataMode": batch.get("dataMode", "synthetic"),
+            "sourceName": batch.get("sourceName", "simulator"),
             "agents": {"A": agent("A"), "B": agent("B")},
             "sleepingDogs": len(batch.get("sleepingDogs", [])),
             "exceptions": len(batch.get("exceptions", [])),

@@ -49,6 +49,16 @@ export function BatchHistoryTable({ rows }: { rows: BatchSummary[] }) {
           <span className="text-amber">sample</span>
         ),
     },
+    {
+      key: 'data',
+      header: 'Data',
+      render: (r) =>
+        r.dataMode === 'real' ? (
+          <span className="text-brass">real · {r.sourceName}</span>
+        ) : (
+          <span className="text-ink-mute">synthetic</span>
+        ),
+    },
     { key: 'events', header: 'Events', numeric: true, render: (r) => r.eventCount },
     {
       key: 'contacts',
@@ -90,16 +100,26 @@ export function BatchHistoryTable({ rows }: { rows: BatchSummary[] }) {
       key: 'net',
       header: 'Net value B',
       numeric: true,
-      render: (r) => (
-        <span className={r.agents.B.netValuePaise >= r.agents.A.netValuePaise ? 'text-amber' : 'text-ink-dim'}>
-          {rupees(r.agents.B.netValuePaise)}
-        </span>
-      ),
+      render: (r) =>
+        r.dataMode === 'real' ? (
+          <span className="text-ink-mute" title={`${r.agents.B.outcomesPending ?? r.eventCount} outcomes pending`}>
+            pending
+          </span>
+        ) : (
+          <span className={r.agents.B.netValuePaise >= r.agents.A.netValuePaise ? 'text-amber' : 'text-ink-dim'}>
+            {rupees(r.agents.B.netValuePaise)}
+          </span>
+        ),
     },
     {
       key: 'winner',
       header: 'Net',
-      render: (r) => <Delta a={r.agents.A.netValuePaise} b={r.agents.B.netValuePaise} />,
+      render: (r) =>
+        r.dataMode === 'real' ? (
+          <span className="text-ink-mute">—</span>
+        ) : (
+          <Delta a={r.agents.A.netValuePaise} b={r.agents.B.netValuePaise} />
+        ),
     },
     {
       key: 'ledgers',

@@ -41,10 +41,12 @@ from pathlib import Path
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 
-from .sim import CONFIG, REASONS, SEGMENT_TRUTH, SEGMENTS, Event, featurize, generate_events, true_uplift
+from .sim import FEATURE_VERSION, REASONS, SEGMENT_TRUTH, SEGMENTS, Event, featurize, generate_events, true_uplift
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-MODEL_CACHE = DATA_DIR / "uplift_models.pkl"
+# Keyed on the feature vector's shape: a new feature means a new cache, never a
+# model silently scoring inputs it was not trained on.
+MODEL_CACHE = DATA_DIR / f"uplift_models_v{FEATURE_VERSION}.pkl"
 BENCH_PATH = DATA_DIR / "uplift_benchmark.json"
 
 TRAIN_SEED = 777
@@ -167,7 +169,8 @@ def train_and_benchmark(force: bool = False) -> tuple[Learners, dict]:
         with open(MODEL_CACHE, "rb") as f:
             learners = pickle.load(f)
         bench = json.loads(BENCH_PATH.read_text())
-        return learners, bench
+        if bench.get("feature_version") == FEATURE_VERSION:
+            return learners, bench
 
     rng = np.random.default_rng(TRAIN_SEED)
     events = generate_events(TRAIN_SEED, TRAIN_N + HOLDOUT_N)
@@ -206,7 +209,7 @@ def train_and_benchmark(force: bool = False) -> tuple[Learners, dict]:
 
     learners = Learners(t_mu0, t_mu1, s_model, x_tau0, x_tau1, dr_model, ch_mu0, ch_mu1)
 
-    bench: dict = {"train_n": TRAIN_N, "holdout_n": HOLDOUT_N, "estimators": {}}
+    bench: dict = {"train_n": TRAIN_N, "holdout_n": HOLDOUT_N, "feature_version": FEATURE_VERSION, "estimators": {}}
     candidates = {
         "t_learner": learners.predict("t_learner", Xho)[2],
         "s_learner": learners.predict("s_learner", Xho)[2],

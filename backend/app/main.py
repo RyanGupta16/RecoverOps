@@ -2,8 +2,12 @@
 
 Endpoints match src/lib/api.ts on the frontend exactly:
 
-  GET  /api/health                     layers, benchmark, key status, audit state
-  POST /api/batch/run                  run a batch, returns {batchId}
+  GET  /api/health                     layers, benchmark, key status, store state
+  GET  /api/merchant                   the merchant config the gate and value model run on
+  GET  /api/policy/rules               the gate's rule catalogue, in evaluation order, with citations
+  GET  /api/sources                    leak sources: simulator · razorpay account · uploaded files
+  POST /api/ingest/file                upload a Razorpay payments export (JSON or CSV) → fileId
+  POST /api/batch/run                  {source?, seed?, fileId?, count?, days?} → {batchId, ...}
   GET  /api/batches?limit=             batch history, newest first (summaries)
   GET  /api/batch/latest               most recent BatchResult
   GET  /api/batch/{id}/results         one BatchResult
@@ -17,9 +21,6 @@ Endpoints match src/lib/api.ts on the frontend exactly:
   GET  /api/audit/verify               walk the hash chain, report the first break
 
 Run:  uvicorn app.main:app --port 8000    (from backend/, venv active)
-
-Every batch and every trace is persisted in data/ledger.db; a restart serves
-the same history. See store.py for the schema and the audit chain.
 """
 
 from __future__ import annotations
@@ -27,11 +28,14 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
+from .policy import rules_public
 from .runtime import Runtime
+from .sources import FileSource
 
 rt = Runtime.build()
 rt.import_legacy_batch()
@@ -44,6 +48,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class RunRequest(BaseModel):
+    source: str = Field("simulator", pattern="^(simulator|razorpay|file)$")
+    seed: int | None = None
+    count: int | None = Field(None, ge=10, le=5000)
+    fileId: str | None = None
+    days: int | None = Field(None, ge=1, le=365)
+    limit: int | None = Field(None, ge=1, le=5000)
 
 
 def _batch_or_404(batch_id: str) -> dict:
@@ -69,6 +82,7 @@ def health() -> dict:
         "retrieval": rt.corpus.benchmark(),
         "razorpayLive": rt.executor.client is not None,
         "llmLive": bool(rt.diagnoser.api_key),
+        "merchant": rt.merchant.name,
         "store": {
             "schemaVersion": rt.store.schema_version,
             "batches": rt.store.count_batches(),
@@ -77,10 +91,55 @@ def health() -> dict:
     }
 
 
+@app.get("/api/merchant")
+def merchant() -> dict:
+    return rt.merchant.public()
+
+
+@app.get("/api/policy/rules")
+def policy_rules() -> list:
+    return rules_public()
+
+
+@app.get("/api/sources")
+def sources() -> list:
+    return rt.describe_sources()
+
+
+@app.post("/api/ingest/file")
+async def ingest_file(file: UploadFile = File(...)) -> dict:
+    content = await file.read()
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(413, "File is larger than 25 MB.")
+    src = rt.sources["file"]
+    assert isinstance(src, FileSource)
+    try:
+        meta = src.save(content, file.filename or "upload")
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(400, f"Could not parse the file: {type(exc).__name__}: {exc}") from exc
+    rt.store.append_audit("ingest.file", {k: v for k, v in meta.items() if k != "warnings"} | {"warnings": meta.get("warnings", [])}, actor="operator", ref=meta["fileId"])
+    return meta
+
+
 @app.post("/api/batch/run")
-def batch_run() -> dict:
-    summary = rt.run_and_store()
-    return {"batchId": summary["batchId"]}
+def batch_run(req: RunRequest | None = None) -> dict:
+    req = req or RunRequest()
+    kwargs: dict = {}
+    if req.count is not None:
+        kwargs["count"] = req.count
+    if req.fileId is not None:
+        kwargs["file_id"] = req.fileId
+    if req.days is not None:
+        kwargs["days"] = req.days
+    if req.limit is not None:
+        kwargs["limit"] = req.limit
+    try:
+        summary = rt.run_and_store(req.source, seed=req.seed, **kwargs)
+    except LookupError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"batchId": summary["batchId"], "source": req.source, "eventCount": summary["eventCount"], "dataMode": summary.get("dataMode")}
 
 
 @app.get("/api/batches")

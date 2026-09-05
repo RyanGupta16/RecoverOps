@@ -1,0 +1,75 @@
+# RecoverOps merchant configuration.
+#
+# Everything about *this* merchant that the pipeline should not have to guess:
+# budgets, thresholds, which channels are real, what a message costs, and the
+# contact windows the gate enforces. Real data from any Razorpay account maps
+# onto this; the simulator is a test fixture that reads the same file.
+#
+# Defaults below are the numbers the demo world has always used.
+
+[merchant]
+name = "RecoverOps demo merchant"
+currency = "INR"
+timezone = "Asia/Kolkata"
+# MSMED Act s.15 (15/45-day payment window, 3× bank-rate interest) is a lever
+# only when the *seller* is a registered micro or small enterprise.
+is_registered_mse = false
+# RBI E-Mandate Framework 2026: recurring debits without AFA are capped at
+# ₹15,000, or ₹1,00,000 for mutual_fund | insurance | credit_card_bill.
+category = "subscription"
+
+[budget]
+# Both agents get the same budget. It has to bind for the ranking objective to
+# matter at all: with a generous budget both policies contact everyone the gate
+# allows and the comparison collapses to parity.
+contact_budget_per_batch = 120
+# Randomised control share held out of contact at ingestion so real
+# incremental recovery can be measured. Applied from phase 2.
+holdout_share = 0.10
+# Residual subscription value, in billing cycles, used to price churn caused by outreach.
+churn_residual_cycles = 3
+# Actions on leaks above this need a human approval before outreach.
+approval_threshold_paise = 1000000
+discount_cap_pct = 5
+
+[thresholds]
+baseline_probability = 0.35
+# Agent B needs estimated uplift above this before it spends a contact. The
+# estimators' error (PEHE ≈ 0.17 on the offline benchmark) is the reason this
+# is not lower: a hurdle below the noise floor buys contacts, not recoveries.
+uplift = 0.10
+
+[channels]
+# true = Razorpay is the registered sender (payment link / invoice notify).
+razorpay_notify_sms = true
+razorpay_notify_email = true
+# "mock" | "live" — live requires a provider adapter and the paperwork that goes with it.
+whatsapp = "mock"
+voice = "mock"
+
+[costs_paise]
+# India 2026 list prices. The gate's message class picks the row, which is why
+# a service message and a promotional one differ in cost by 7×.
+sms_transactional = 20
+whatsapp_utility = 15
+whatsapp_marketing = 109
+email = 2
+voice_per_minute = 100
+
+[windows]
+# TCCCPR default preference band for promotional communication, IST.
+promotional = { start = 9, end = 21 }
+# RBI recovery-agent norm for anything that reads as dues collection, IST.
+dues = { start = 8, end = 19 }
+
+[frequency]
+max_contacts_7d = 2
+max_retries_per_cycle_cards = 3
+# NPCI UPI Autopay: one execution plus three retries per mandate cycle.
+max_mandate_attempts = 4
+
+[frequency.network_retry_cap_30d]
+# Visa: ≤15 reattempts in 30 days (US$0.10 each beyond). Mastercard: ≤10 (US$1→2).
+Visa = 15
+MasterCard = 10
+default = 10

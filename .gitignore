@@ -49,11 +49,13 @@ __pycache__/
 *.py[cod]
 
 # backend runtime state — rebuilt on first boot / first batch run
-backend/data/uplift_models.pkl
+backend/data/uplift_models*.pkl
 backend/data/ledger.db
 backend/data/ledger.db-wal
 backend/data/ledger.db-shm
 backend/data/batches/
+# uploaded real-data exports — customer data, never committed
+backend/data/uploads/
 .pytest_cache/
 
 # local editor / agent settings
